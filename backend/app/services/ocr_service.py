@@ -1,6 +1,5 @@
 import os
 import logging
-from typing import Optional
 from PIL import Image
 
 # Third-party libraries (imported inside functions or defensively)

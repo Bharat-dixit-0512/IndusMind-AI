@@ -1,5 +1,7 @@
 import logging
-from typing import List, Dict, Any, Tuple
+import re
+from typing import List, Dict, Any
+# pyrefly: ignore [missing-import]
 from neo4j import GraphDatabase
 from app.core.config import settings
 
@@ -142,80 +144,83 @@ class Neo4jGraphDB:
             logger.error(f"Error fetching entire graph details: {e}")
             return self._mock_db
 
+    _NODE_MERGE_RE = re.compile(r"MERGE \(n:(\w+) \{id: \$id\}\) SET n \+= \$properties")
+    _REL_MERGE_RE = re.compile(r"MERGE \(s\)-\[r:(\w+)\]->\(t\)")
+
     def _mock_write_emulation(self, cypher: str, parameters: Dict[str, Any]):
         """
-        Adds simple nodes/edges to mock storage for visual verification if Neo4j is offline.
+        Emulates Neo4j MERGE writes against the in-memory mock graph when no real
+        Neo4j instance is connected, so entity extraction from uploaded documents
+        (see app.services.entity_extractor) is still reflected in the Knowledge
+        Graph view instead of being silently discarded.
+
+        Recognizes the two write patterns used by this codebase:
+          - Node upsert:  MERGE (n:Label {id: $id}) SET n += $properties
+          - Relationship: MATCH (s {id: $source_id}) MATCH (t {id: $target_id})
+                          MERGE (s)-[r:TYPE]->(t) SET r += $properties
         """
         parameters = parameters or {}
-        # Parse very simple MERGE / CREATE queries to populate the frontend mock view
-        # We will pre-populate mock data for our Centurion Petrochemical Plant dataset if Neo4j is offline.
-        pass
+        cypher_norm = " ".join(cypher.split())
+
+        node_match = self._NODE_MERGE_RE.search(cypher_norm)
+        if node_match:
+            label = node_match.group(1)
+            node_id = parameters.get("id")
+            props = parameters.get("properties", {}) or {}
+            existing = next((n for n in self._mock_db["nodes"] if n["data"].get("id") == node_id), None)
+            name = props.get("name") or props.get("title") or node_id
+            if existing:
+                existing["type"] = label
+                existing["data"] = {**props, "label": f"{label}: {name}"}
+            else:
+                self._mock_db["nodes"].append({
+                    "id": f"n{len(self._mock_db['nodes']) + 1}_{node_id}",
+                    "type": label,
+                    "data": {**props, "label": f"{label}: {name}"}
+                })
+            return
+
+        rel_match = self._REL_MERGE_RE.search(cypher_norm)
+        if rel_match and "source_id" in parameters and "target_id" in parameters:
+            rel_type = rel_match.group(1)
+            source_node = next((n for n in self._mock_db["nodes"] if n["data"].get("id") == parameters["source_id"]), None)
+            target_node = next((n for n in self._mock_db["nodes"] if n["data"].get("id") == parameters["target_id"]), None)
+            if source_node and target_node:
+                already_exists = any(
+                    e["source"] == source_node["id"] and e["target"] == target_node["id"] and e["label"] == rel_type
+                    for e in self._mock_db["relationships"]
+                )
+                if not already_exists:
+                    self._mock_db["relationships"].append({
+                        "id": f"e{len(self._mock_db['relationships']) + 1}",
+                        "source": source_node["id"],
+                        "target": target_node["id"],
+                        "label": rel_type
+                    })
+            else:
+                logger.debug(
+                    "Mock write emulation: could not resolve source/target node for relationship %s (source_id=%s, target_id=%s)",
+                    rel_type, parameters.get("source_id"), parameters.get("target_id")
+                )
+            return
+
+        logger.debug(f"Mock write emulation: unrecognized cypher pattern, skipped: {cypher_norm[:150]}")
 
     def _mock_read_emulation(self, cypher: str, parameters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # Provide pre-seeded mock graph records if database is inactive
-        if "MATCH (n) RETURN" in cypher or "MATCH (n)-[r]->" in cypher:
-            return []
+        # No specialized read patterns are emulated; the mock graph is exposed
+        # directly via get_all_nodes_and_edges() instead.
         return []
 
     def load_centurion_mock_graph(self):
         """
-        Seeds standard nodes and edges representing the Centurion Plant Train 2.
-        Includes enriched SparePart, Location, Operator, and InspectionReport relationships.
+        Loads the OPTIONAL Centurion Plant Train 2 sample dataset (see
+        app.services.seed_data) into the graph. This is never called
+        automatically — it only runs when explicitly requested, e.g. via
+        `POST /api/v1/graph/reseed`, so the runtime never depends on demo data.
         """
-        # If Neo4j is active, we insert using Cypher. If inactive, we populate the internal mock database.
-        mock_nodes = [
-            # Locations
-            {"id": "n1",  "type": "Location",         "data": {"id": "LOC-T2",        "name": "Train 2 Processing Area",        "label": "Location: Train 2"}},
-            {"id": "n11", "type": "Location",         "data": {"id": "LOC-UTIL",      "name": "Train 2 Utility Bay",            "label": "Location: Utility Bay"}},
-            # Machines
-            {"id": "n2",  "type": "Machine",          "data": {"id": "P-102",         "name": "Centrifugal Pump P-102",         "type": "Pump",       "status": "OPERATIONAL", "label": "Machine: Pump P-102"}},
-            {"id": "n3",  "type": "Machine",          "data": {"id": "C-301",         "name": "Reciprocating Compressor C-301", "type": "Compressor", "status": "WARNING",     "label": "Machine: Compressor C-301"}},
-            # Engineers
-            {"id": "n4",  "type": "Engineer",         "data": {"id": "ENG-ER",        "name": "Elena Rostova",  "specialization": "Rotary Equipment",    "label": "Engineer: Elena Rostova"}},
-            {"id": "n5",  "type": "Engineer",         "data": {"id": "ENG-MV",        "name": "Marcus Vance",   "specialization": "Vibration Specialist", "label": "Engineer: Marcus Vance"}},
-            {"id": "n12", "type": "Engineer",         "data": {"id": "OPR-AM",        "name": "Ahmad Malik",    "specialization": "Operator - Train 2",   "label": "Operator: Ahmad Malik"}},
-            # Spare Parts
-            {"id": "n6",  "type": "SparePart",        "data": {"id": "PART-IMP402",   "name": "Impeller Kit K-402",    "part_number": "IMP-402",   "stock": 4, "label": "SparePart: Impeller Kit"}},
-            {"id": "n13", "type": "SparePart",        "data": {"id": "PART-SEAL-S100","name": "Mechanical Seal S-100", "part_number": "SEAL-S100", "stock": 7, "label": "SparePart: Seal S-100"}},
-            # Failure
-            {"id": "n7",  "type": "Failure",          "data": {"id": "FAIL-P102-1",   "symptom": "High vibration and seal leakage", "root_cause": "Misaligned shaft and worn impeller bearings", "severity": "CRITICAL", "label": "Failure: Vibrations/Leak"}},
-            # Maintenance Records
-            {"id": "n8",  "type": "MaintenanceRecord","data": {"id": "WO-9844",        "date": "2026-05-14", "action_taken": "Shaft realigned, Impeller Kit K-402 and Seal S-100 replaced", "label": "Maintenance: WO-9844"}},
-            # SOPs
-            {"id": "n9",  "type": "SOP",              "data": {"id": "SOP-MECH-022",  "title": "Standard Shaft Alignment Protocol", "code": "SOP-MECH-022", "label": "SOP: Shaft Alignment"}},
-            # Inspection Reports
-            {"id": "n10", "type": "InspectionReport", "data": {"id": "INSP-P102-JUN2026","date": "2026-06-28", "checklist_version": "v1.2", "score": 75, "label": "Inspection: INSP-P102-JUN2026"}},
-            {"id": "n14", "type": "InspectionReport", "data": {"id": "INSP-C301-JUN2026","date": "2026-06-30", "checklist_version": "v1.1", "score": 68, "label": "Inspection: INSP-C301-JUN2026"}},
-        ]
-
-        mock_edges = [
-            # Spatial / location hierarchy
-            {"id": "e1",  "source": "n2",  "target": "n1",  "label": "LOCATED_AT"},
-            {"id": "e2",  "source": "n3",  "target": "n1",  "label": "LOCATED_AT"},
-            {"id": "e15", "source": "n11", "target": "n1",  "label": "PART_OF"},
-            {"id": "e16", "source": "n13", "target": "n11", "label": "STORED_IN"},
-            # Maintenance work order chains
-            {"id": "e3",  "source": "n8",  "target": "n2",  "label": "ON_MACHINE"},
-            {"id": "e4",  "source": "n4",  "target": "n8",  "label": "PERFORMED"},
-            {"id": "e5",  "source": "n8",  "target": "n6",  "label": "REPLACED_WITH"},
-            {"id": "e17", "source": "n8",  "target": "n13", "label": "REPLACED_WITH"},
-            {"id": "e10", "source": "n8",  "target": "n9",  "label": "FOLLOWED_SOP"},
-            # Failure linkages
-            {"id": "e6",  "source": "n7",  "target": "n2",  "label": "OCCURRED_ON"},
-            {"id": "e7",  "source": "n8",  "target": "n7",  "label": "RESOLVED"},
-            # Engineer responsibilities
-            {"id": "e8",  "source": "n4",  "target": "n2",  "label": "RESPONSIBLE_FOR"},
-            {"id": "e9",  "source": "n5",  "target": "n3",  "label": "RESPONSIBLE_FOR"},
-            # Inspection → Machine / Failure / SOP
-            {"id": "e11", "source": "n10", "target": "n2",  "label": "INSPECTED_ON"},
-            {"id": "e12", "source": "n10", "target": "n7",  "label": "LOGGED_INCIDENT"},
-            {"id": "e13", "source": "n10", "target": "n9",  "label": "COMPARED_TO"},
-            {"id": "e18", "source": "n10", "target": "n9",  "label": "FOLLOWED_SOP"},
-            {"id": "e19", "source": "n14", "target": "n3",  "label": "INSPECTED_ON"},
-            # Operator conducted inspections
-            {"id": "e20", "source": "n12", "target": "n10", "label": "CONDUCTED_BY"},
-            {"id": "e21", "source": "n12", "target": "n14", "label": "CONDUCTED_BY"},
-        ]
+        from app.services.seed_data import CENTURION_MOCK_NODES, CENTURION_MOCK_EDGES
+        mock_nodes = CENTURION_MOCK_NODES
+        mock_edges = CENTURION_MOCK_EDGES
 
         if not self.active:
             self._mock_db = {"nodes": mock_nodes, "relationships": mock_edges}
@@ -249,7 +254,4 @@ class Neo4jGraphDB:
         logger.info("Neo4j database seeded with Centurion Plant Train 2 items.")
 
 
-
 graph_db = Neo4jGraphDB()
-# Preseed mock graph database locally
-graph_db.load_centurion_mock_graph()

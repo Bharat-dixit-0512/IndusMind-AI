@@ -1,10 +1,8 @@
 import logging
-import json
 import re
 from typing import Dict, Any, List
 import google.generativeai as genai
 
-from app.core.config import settings
 from app.services.vector_store import vector_store
 from app.services.graph_db import graph_db
 from app.services.gemini_service import gemini_service
@@ -13,6 +11,29 @@ from app.agents.maintenance_agent import maintenance_agent
 from app.agents.knowledge_agent import knowledge_agent
 
 logger = logging.getLogger(__name__)
+
+
+def _citations_from_chunks(chunks: List[Dict[str, Any]], note: str, limit: int = 3) -> List[Dict[str, Any]]:
+    """
+    Builds citation entries from the chunks actually retrieved for this query,
+    instead of a fixed placeholder citation. Never references documents that
+    weren't actually retrieved.
+    """
+    citations = []
+    seen = set()
+    for chunk in chunks[:limit]:
+        meta = chunk.get("metadata", {})
+        filename = meta.get("filename", "Unknown Document")
+        if filename in seen:
+            continue
+        seen.add(filename)
+        content = (chunk.get("page_content") or "").strip()
+        citations.append({
+            "document_name": filename,
+            "page_number": meta.get("chunk_index"),
+            "text": note if not content else (content[:200] + ("..." if len(content) > 200 else ""))
+        })
+    return citations
 
 
 class PlannerAgent:
@@ -136,25 +157,50 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
             graph_visual_context = graph_db.get_all_nodes_and_edges()
 
         # 3. Route & Process
+        result = self._route(intent, query, vector_chunks, graph_triples, graph_visual_context, agent_logs)
+
+        retrieved_docs = sorted({c.get("metadata", {}).get("filename", "Unknown Document") for c in vector_chunks})
+        graph_node_count = len(result.get("graph_context") or [])
+        logger.info(
+            "Query summary | question=%r | agent=%s | gemini_active=%s | retrieved_chunks=%d %s | graph_nodes=%d | response_preview=%r",
+            query, intent, gemini_service.active, len(vector_chunks), retrieved_docs, graph_node_count,
+            (result.get("response") or "")[:200]
+        )
+        return result
+
+    def _route(
+        self,
+        intent: str,
+        query: str,
+        vector_chunks: List[Dict[str, Any]],
+        graph_triples: List[Dict[str, Any]],
+        graph_visual_context: Any,
+        agent_logs: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         if intent == "COMPLIANCE":
-            agent_logs.append({"agent_name": "Compliance Agent", "status": "COMPLETED", "log_message": "Auditing safety parameters and tolerance limits against SOPs."})
+            agent_logs.append({"agent_name": "Compliance Agent", "status": "COMPLETED", "log_message": "Auditing parameters and tolerance limits found in the retrieved documents."})
             report = compliance_agent.evaluate_compliance(query, vector_chunks)
-            
-            markdown_response = f"### Compliance Audit Score: {report.get('compliance_score')}%\n\n"
-            markdown_response += f"**Summary:** {report.get('summary')}\n\n"
-            markdown_response += "#### Compliance Parameter Checklists:\n"
-            for item in report.get("checklist", []):
-                icon = "✅" if item.get("status") == "COMPLIANT" else "❌"
-                markdown_response += f"- {icon} **{item.get('parameter')}**: Inspected `{item.get('inspected_value')}` vs SOP limits `{item.get('sop_limit')}`. (Deviation: {item.get('deviation')})\n"
-            markdown_response += "\n#### Corrective Actions Recommended:\n"
-            for action in report.get("corrective_actions", []):
-                markdown_response += f"1. {action}\n"
-            
+
+            if not vector_chunks:
+                markdown_response = report.get("summary", "No relevant information was found in the uploaded documents.")
+            else:
+                markdown_response = f"### Compliance Audit Score: {report.get('compliance_score')}%\n\n"
+                markdown_response += f"**Summary:** {report.get('summary')}\n\n"
+                if report.get("checklist"):
+                    markdown_response += "#### Compliance Parameter Checklists:\n"
+                    for item in report.get("checklist", []):
+                        icon = "✅" if item.get("status") == "COMPLIANT" else "❌"
+                        markdown_response += f"- {icon} **{item.get('parameter')}**: Inspected `{item.get('inspected_value')}` vs SOP limits `{item.get('sop_limit')}`. (Deviation: {item.get('deviation')})\n"
+                if report.get("corrective_actions"):
+                    markdown_response += "\n#### Corrective Actions Recommended:\n"
+                    for action in report.get("corrective_actions", []):
+                        markdown_response += f"1. {action}\n"
+
             return {
                 "response": markdown_response,
-                "citations": [{"document_name": "SOP-MECH-022.pdf", "page_number": 1, "text": "Compliance safety parameter audit limits verified."}],
+                "citations": _citations_from_chunks(vector_chunks, "Compliance-relevant excerpt from uploaded document."),
                 "graph_context": graph_visual_context.get("nodes", []) if isinstance(graph_visual_context, dict) else [],
-                "confidence_score": report.get("confidence_score", 0.89),
+                "confidence_score": report.get("confidence_score", 0.0),
                 "reasoning_steps": report.get("reasoning_steps", []),
                 "evidence_base": report.get("evidence_base", []),
                 "timeline": [],
@@ -162,27 +208,33 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
             }
 
         elif intent == "MAINTENANCE":
-            agent_logs.append({"agent_name": "Maintenance Agent", "status": "COMPLETED", "log_message": "Running Root Cause Analysis (RCA) and mapping chronology database."})
+            agent_logs.append({"agent_name": "Maintenance Agent", "status": "COMPLETED", "log_message": "Running Root Cause Analysis (RCA) from the retrieved documents."})
             report = maintenance_agent.generate_rca(query, vector_chunks)
-            
-            markdown_response = f"### Root Cause Analysis (RCA) - Asset: {report.get('equipment_id')}\n\n"
-            markdown_response += f"**Primary Failure Mode:** {report.get('failure_mode')}\n\n"
-            markdown_response += f"**Root Cause Diagnosis:** {report.get('root_cause')}\n\n"
-            markdown_response += "#### Chronological Events Timeline:\n"
-            for item in report.get("chronology", []):
-                markdown_response += f"- {item}\n"
-            markdown_response += "\n#### Maintenance Actions Executed:\n"
-            for item in report.get("maintenance_actions_taken", []):
-                markdown_response += f"- {item}\n"
-            markdown_response += "\n#### Preventive Maintenance Plan:\n"
-            for item in report.get("preventive_recommendations", []):
-                markdown_response += f"- {item}\n"
-            
+
+            if not vector_chunks:
+                markdown_response = report.get("root_cause", "No relevant information was found in the uploaded documents.")
+            else:
+                markdown_response = f"### Root Cause Analysis (RCA) - Asset: {report.get('equipment_id') or 'Unknown'}\n\n"
+                markdown_response += f"**Primary Failure Mode:** {report.get('failure_mode')}\n\n"
+                markdown_response += f"**Root Cause Diagnosis:** {report.get('root_cause')}\n\n"
+                if report.get("chronology"):
+                    markdown_response += "#### Chronological Events Timeline:\n"
+                    for item in report.get("chronology", []):
+                        markdown_response += f"- {item}\n"
+                if report.get("maintenance_actions_taken"):
+                    markdown_response += "\n#### Maintenance Actions Executed:\n"
+                    for item in report.get("maintenance_actions_taken", []):
+                        markdown_response += f"- {item}\n"
+                if report.get("preventive_recommendations"):
+                    markdown_response += "\n#### Preventive Maintenance Plan:\n"
+                    for item in report.get("preventive_recommendations", []):
+                        markdown_response += f"- {item}\n"
+
             return {
                 "response": markdown_response,
-                "citations": [{"document_name": "WO-9844-RCA.xlsx", "page_number": 1, "text": "RCA checklist formulated from machine telemetry history logs."}],
+                "citations": _citations_from_chunks(vector_chunks, "RCA-relevant excerpt from uploaded document."),
                 "graph_context": graph_visual_context.get("nodes", []) if isinstance(graph_visual_context, dict) else [],
-                "confidence_score": report.get("confidence_score", 0.92),
+                "confidence_score": report.get("confidence_score", 0.0),
                 "reasoning_steps": report.get("reasoning_steps", []),
                 "evidence_base": report.get("evidence_base", []),
                 "timeline": report.get("timeline", []),
@@ -190,14 +242,14 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
             }
 
         elif intent == "KNOWLEDGE":
-            agent_logs.append({"agent_name": "Knowledge Agent", "status": "COMPLETED", "log_message": "Retrieving standard operating procedures (SOPs) and OEM manuals."})
+            agent_logs.append({"agent_name": "Knowledge Agent", "status": "COMPLETED", "log_message": "Retrieving relevant procedures/manuals from the uploaded documents."})
             report = knowledge_agent.retrieve_sop_or_manual(query, vector_chunks)
-            
+
             return {
                 "response": report.get("response", ""),
-                "citations": [{"document_name": "SOP-MECH-022.pdf", "page_number": 1, "text": "SOP standards verified in knowledge library."}],
+                "citations": _citations_from_chunks(vector_chunks, "Reference excerpt from uploaded document."),
                 "graph_context": graph_visual_context.get("nodes", []) if isinstance(graph_visual_context, dict) else [],
-                "confidence_score": report.get("confidence_score", 0.95),
+                "confidence_score": report.get("confidence_score", 0.0),
                 "reasoning_steps": report.get("reasoning_steps", []),
                 "evidence_base": report.get("evidence_base", []),
                 "timeline": [],

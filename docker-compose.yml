@@ -6,11 +6,11 @@ services:
     container_name: industrial-brain-postgres
     restart: always
     environment:
-      POSTGRES_DB: industrial_brain
+      POSTGRES_DB: indusMind
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_PASSWORD: abhi2004 
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -22,7 +22,7 @@ services:
       - "7474:7474" # Neo4j Browser UI
       - "7687:7687" # Bolt protocol port
     environment:
-      - NEO4J_AUTH=neo4j/password
+      - NEO4J_AUTH=neo4j/abhi2004
       - NEO4J_PLUGINS=["apoc"]
     volumes:
       - neo4j_data:/data

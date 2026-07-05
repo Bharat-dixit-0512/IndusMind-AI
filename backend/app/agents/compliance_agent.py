@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, List
 import google.generativeai as genai
 import json
-from app.services.gemini_service import gemini_service
+from app.services.gemini_service import gemini_service, format_chunks_as_context
 
 logger = logging.getLogger(__name__)
 
@@ -13,37 +13,42 @@ class ComplianceAgent:
 
     def evaluate_compliance(self, query: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Evaluates inspection reports against SOP procedures.
-        Compares numeric tolerances and safety requirements.
+        Evaluates inspection/audit content against SOP/procedure text found in the
+        user's own uploaded documents. Never fabricates findings — if no relevant
+        content was retrieved, or Gemini is unavailable, falls back to a grounded,
+        non-fabricated report built from the retrieved chunks only.
         """
-        logger.info("ComplianceAgent running evaluation...")
-        
-        # Consolidate text context
-        context_str = ""
-        for i, chunk in enumerate(context_chunks):
-            meta = chunk.get("metadata", {})
-            filename = meta.get("filename", "Unknown Document")
-            context_str += f"[Source: {filename}]\nContent: {chunk.get('page_content', '')}\n\n"
+        logger.info("ComplianceAgent running evaluation for query: %r (%d context chunk(s))", query, len(context_chunks))
+
+        if not context_chunks:
+            logger.info("ComplianceAgent: no context chunks retrieved, returning not-found report.")
+            return self._not_found_report()
+
+        context_str = format_chunks_as_context(context_chunks)
 
         prompt = f"""
-You are the Lead Safety & Regulatory Compliance Auditor for the Centurion Petrochemical Plant.
-Your task is to analyze the provided inspection report details against the plant SOPs.
+You are a compliance auditor. Your task is to analyze the provided inspection/audit content
+against any procedure or standard limits found in the SAME context. Use ONLY the context below —
+never introduce facts, parameters, or limits that are not present in it.
 
-SOP and Inspection Context:
+Retrieved Document Context:
 ---
 {context_str}
 ---
 
 User Query/Focus: {query}
 
-Please perform the following audit:
-1. Identify all inspected parameters (e.g. shaft misalignment, temperature, pressure).
-2. For each parameter, check the official SOP limits specified in the text.
-3. Compare the inspected value against the SOP limit.
+Please perform the following audit strictly from the context above:
+1. Identify all inspected parameters actually mentioned in the context (e.g. measurements, thresholds).
+2. For each parameter, check any official limits specified in the text.
+3. Compare the inspected value against that limit.
 4. Flag any non-compliant values.
-5. Compute a general Compliance Score (0 to 100%).
-6. Formulate corrective actions.
+5. Compute a general Compliance Score (0 to 100%) based only on what is present.
+6. Formulate corrective actions grounded in the context.
 7. Include confidence and explainability metrics.
+
+If the context does not contain enough information to audit compliance, set "compliance_score" to 0,
+leave "checklist" and "corrective_actions" empty, and explain this in "summary".
 
 Return your response in EXACT JSON format with these keys:
 - "compliance_score": (int)
@@ -64,9 +69,9 @@ Do not wrap in markdown or add explanations outside the JSON block.
 
         try:
             if not self.active:
-                logger.info("ComplianceAgent running in Mock mode.")
-                return self._get_mock_compliance_report(query)
-                
+                logger.info("ComplianceAgent: Gemini unavailable, building grounded fallback report.")
+                return self._grounded_fallback_report(context_chunks)
+
             model = genai.GenerativeModel("gemini-2.5-flash")
             response = model.generate_content(
                 prompt,
@@ -74,59 +79,41 @@ Do not wrap in markdown or add explanations outside the JSON block.
             )
             return json.loads(response.text.strip())
         except Exception as e:
-            logger.error(f"ComplianceAgent evaluation failed: {e}")
-            return self._get_mock_compliance_report(query)
+            logger.error(f"ComplianceAgent evaluation failed: {e}. Falling back to grounded chunk-based report.")
+            return self._grounded_fallback_report(context_chunks)
 
-    def _get_mock_compliance_report(self, query: str) -> Dict[str, Any]:
+    def _not_found_report(self) -> Dict[str, Any]:
         return {
-            "compliance_score": 75,
-            "summary": "The shaft alignment inspection for Centrifugal Pump P-102 failed to meet the tolerances defined in SOP-MECH-022. Operating temperature is close to safety thresholds.",
-            "checklist": [
-                {
-                    "parameter": "Radial Shaft Misalignment",
-                    "sop_limit": "Max 0.05 mm",
-                    "inspected_value": "0.08 mm",
-                    "status": "NON_COMPLIANT",
-                    "deviation": "Exceeds tolerance limit by 0.03 mm"
-                },
-                {
-                    "parameter": "Vibration Amplitude",
-                    "sop_limit": "Max 2.8 mm/s RMS",
-                    "inspected_value": "4.2 mm/s RMS",
-                    "status": "NON_COMPLIANT",
-                    "deviation": "Exceeds alert limit by 1.4 mm/s RMS"
-                },
-                {
-                    "parameter": "Casing Temperature",
-                    "sop_limit": "Max 75 C",
-                    "inspected_value": "72 C",
-                    "status": "COMPLIANT",
-                    "deviation": "None"
-                },
-                {
-                    "parameter": "Mechanical Seal Leak Rate",
-                    "sop_limit": "Max 3 drops/min",
-                    "inspected_value": "12 drops/min",
-                    "status": "NON_COMPLIANT",
-                    "deviation": "Excessive leakage indicating seal face wear"
-                }
-            ],
-            "corrective_actions": [
-                "Shutdown Pump P-102 immediately to prevent catastrophic bearing failure.",
-                "Execute laser shaft realignment according to SOP-MECH-022 Section 3.",
-                "Replace mechanical seal using Spare Part: Mechanical Seal S-100.",
-                "Perform a post-maintenance vibration sweep before placing the unit back in service."
-            ],
-            "confidence_score": 0.89,
+            "compliance_score": 0,
+            "summary": "No relevant information was found in the uploaded documents.",
+            "checklist": [],
+            "corrective_actions": [],
+            "confidence_score": 0.0,
+            "reasoning_steps": ["No matching content was retrieved from the uploaded documents."],
+            "evidence_base": []
+        }
+
+    def _grounded_fallback_report(self, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Non-fabricated fallback used when Gemini is unavailable but relevant chunks
+        were retrieved — surfaces the raw excerpts instead of a hardcoded demo report.
+        """
+        filenames = sorted({c.get("metadata", {}).get("filename", "Unknown Document") for c in context_chunks})
+        excerpt = "\n\n".join(
+            f"[{c.get('metadata', {}).get('filename', 'Unknown Document')}] {(c.get('page_content') or '').strip()[:1500]}"
+            for c in context_chunks[:3]
+        )
+        return {
+            "compliance_score": 0,
+            "summary": f"AI reasoning is currently unavailable. Showing relevant excerpts retrieved from your uploaded documents instead:\n\n{excerpt}",
+            "checklist": [],
+            "corrective_actions": [],
+            "confidence_score": 0.3,
             "reasoning_steps": [
-                "Pulled alignment safety standard SOP-MECH-022 Section 3.",
-                "Compared maintenance log alignment parameters (0.08 mm) with maximum bounds.",
-                "Identified non-compliant mechanical seal leakage levels."
+                "Retrieved matching content from uploaded documents.",
+                "Gemini reasoning unavailable — returning raw excerpts instead of a structured audit."
             ],
-            "evidence_base": [
-                "SOP-MECH-022.pdf Section 3: Alignment specifications",
-                "SOP-MECH-022.pdf Section 1: Seal leakage parameters"
-            ]
+            "evidence_base": filenames
         }
 
 

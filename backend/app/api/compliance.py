@@ -1,6 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from app.db.session import get_db
+from fastapi import APIRouter, Depends
 from app.agents.compliance_agent import compliance_agent
 from app.services.vector_store import vector_store
 from app.api.deps import get_current_user
@@ -12,7 +10,6 @@ router = APIRouter()
 @router.post("/check")
 def run_compliance_check(
     query: str,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """

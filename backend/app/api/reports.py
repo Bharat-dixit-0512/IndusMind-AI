@@ -15,7 +15,6 @@ from app.agents.compliance_agent import compliance_agent
 from app.agents.maintenance_agent import maintenance_agent
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.core.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

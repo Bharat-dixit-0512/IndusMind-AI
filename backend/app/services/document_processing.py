@@ -8,7 +8,6 @@ from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.services.ocr_service import extract_text
 from app.services.chunking import split_text_into_chunks
 from app.services.vector_store import vector_store
-from app.services.graph_db import graph_db
 
 logger = logging.getLogger(__name__)
 

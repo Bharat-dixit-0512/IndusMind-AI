@@ -2,17 +2,23 @@ import os
 import re
 import json
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 import google.generativeai as genai
 from app.core.config import settings
 from app.services.graph_db import graph_db
 
 logger = logging.getLogger(__name__)
 
-# Predefined lists of known entities for dictionary matching
-KNOWN_ENGINEERS = ["elena rostova", "marcus vance", "john doe", "sarah connor"]
-KNOWN_LOCATIONS = ["train 2", "centurion plant", "compressor deck", "pump house"]
-KNOWN_PARTS = ["impeller kit k-402", "mechanical seal s-100", "journal bearing j-50", "rotor shaft rs-10"]
+# Dictionary-matching vocabularies for Engineer/Location/SparePart entities. These are
+# intentionally empty by default so entity extraction only ever reflects names/terms
+# that are actually present in documents a user uploads — never a predefined demo set.
+#
+# To try the extractor against the optional Centurion Plant sample dataset, import
+# CENTURION_KNOWN_ENGINEERS / CENTURION_KNOWN_LOCATIONS / CENTURION_KNOWN_PARTS from
+# app.services.seed_data and assign them here manually; they are not wired in by default.
+KNOWN_ENGINEERS: List[str] = []
+KNOWN_LOCATIONS: List[str] = []
+KNOWN_PARTS: List[str] = []
 
 
 def rule_based_extract(text: str) -> Dict[str, List[Dict[str, Any]]]:
@@ -88,9 +94,9 @@ def rule_based_extract(text: str) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def extract_semantic_relations_with_gemini(
-    text: str, 
+    text: str,
     extracted_entities: Dict[str, List[Dict[str, Any]]]
-) -> List[Dict[str, Any]]:
+) -> Dict[str, List[Dict[str, Any]]]:
     """
     Uses Gemini 2.5 Flash to extract semantic relationships and complex entities
     (e.g., Failures, MaintenanceRecords) that connect our rule-based entities.
@@ -104,8 +110,10 @@ def extract_semantic_relations_with_gemini(
     entity_summary = json.dumps(extracted_entities, indent=2)
     
     prompt = f"""
-You are an expert industrial knowledge graph building agent.
-We have already extracted these basic entities from an industrial report:
+You are an expert knowledge graph extraction agent. Extract entities and relationships
+strictly and only from the document text provided below — never invent entities that
+are not present in it.
+We have already extracted these basic entities from the document:
 {entity_summary}
 
 Here is the document text:
@@ -176,19 +184,24 @@ def extract_and_sync_entities(filename: str, text: str) -> None:
     and updates the active Neo4j graph database.
     """
     logger.info(f"Running hybrid entity extraction on {filename}")
-    
+
     # 1. Rule-based extraction
     rules_entities = rule_based_extract(text)
-    
+    rule_count = sum(len(v) for v in rules_entities.values())
+    logger.info(f"Rule-based extraction found {rule_count} entities in {filename}: "
+                f"{ {k: len(v) for k, v in rules_entities.items()} }")
+
     # 2. Sync rule-based entities to Neo4j
     for label, node_list in rules_entities.items():
         for node in node_list:
             cypher = f"MERGE (n:{label} {{id: $id}}) SET n += $properties"
             graph_db.execute_write(cypher, {"id": node["id"], "properties": node})
-            
+
     # 3. Semantic extraction via Gemini
     semantic_data = extract_semantic_relations_with_gemini(text, rules_entities)
-    
+    logger.info(f"Semantic extraction found {len(semantic_data.get('nodes', []))} node(s) and "
+                f"{len(semantic_data.get('relationships', []))} relationship(s) in {filename}")
+
     # 4. Sync semantic nodes
     for node in semantic_data.get("nodes", []):
         lbl = node.get("type")

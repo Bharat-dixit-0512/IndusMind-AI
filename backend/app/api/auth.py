@@ -1,13 +1,14 @@
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException, status
+# pyrefly: ignore [missing-import]
 from fastapi.security import OAuth2PasswordRequestForm
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
-from datetime import timedelta
 
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.auth import UserCreate, UserOut, Token, UserLogin
+from app.schemas.auth import UserCreate, Token, UserLogin
 from app.core.security import verify_password, hash_password, create_access_token
-from app.core.config import settings
 
 router = APIRouter()
 

@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, List
 import google.generativeai as genai
 import json
-from app.services.gemini_service import gemini_service
+from app.services.gemini_service import gemini_service, format_chunks_as_context
 
 logger = logging.getLogger(__name__)
 
@@ -13,29 +13,32 @@ class MaintenanceAgent:
 
     def generate_rca(self, query: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Processes failures logs, manuals, and records to build an RCA.
-        Returns a structured report with confidence, reasoning, evidence, and visual timeline events.
+        Processes failure logs, manuals, and records retrieved from the user's own
+        uploaded documents to build an RCA. Never fabricates a report — if no relevant
+        content was retrieved, or Gemini is unavailable, falls back to a grounded,
+        non-fabricated report built from the retrieved chunks only.
         """
-        logger.info("MaintenanceAgent generating RCA...")
-        
-        context_str = ""
-        for i, chunk in enumerate(context_chunks):
-            meta = chunk.get("metadata", {})
-            filename = meta.get("filename", "Unknown Document")
-            context_str += f"[Source: {filename}]\nContent: {chunk.get('page_content', '')}\n\n"
+        logger.info("MaintenanceAgent generating RCA for query: %r (%d context chunk(s))", query, len(context_chunks))
+
+        if not context_chunks:
+            logger.info("MaintenanceAgent: no context chunks retrieved, returning not-found report.")
+            return self._not_found_rca()
+
+        context_str = format_chunks_as_context(context_chunks)
 
         prompt = f"""
-You are the Chief Reliability Engineer at the Centurion Petrochemical Plant.
-You are tasked with generating a formal Root Cause Analysis (RCA) report for an equipment failure.
+You are a reliability engineer building a formal Root Cause Analysis (RCA) report for a failure
+described in the context below. Use ONLY the context — never introduce equipment, dates, or facts
+that are not present in it.
 
-Failure Context and logs:
+Retrieved Document Context:
 ---
 {context_str}
 ---
 
 User Query/Asset under investigation: {query}
 
-Please formulate an RCA with the following sections:
+Please formulate an RCA with the following sections, grounded strictly in the context above:
 1. Equipment details and status under investigation.
 2. Failure mode identification.
 3. Chronological timeline of the failure (containing structured objects with time, event, status, and detail).
@@ -45,8 +48,11 @@ Please formulate an RCA with the following sections:
 7. Lessons learned.
 8. Confidence and explainability metrics.
 
+If the context does not contain enough information for a section, use an empty list/string for it
+rather than inventing details, and reflect the gap honestly in "root_cause".
+
 Return your response in EXACT JSON format with these keys:
-- "equipment_id": (string, e.g. "P-102")
+- "equipment_id": (string, e.g. "P-102", or "" if not present in context)
 - "failure_mode": (string)
 - "chronology": list of strings outlining events
 - "timeline": list of objects, each containing:
@@ -67,9 +73,9 @@ Do not wrap in markdown or add explanations outside the JSON block.
 
         try:
             if not self.active:
-                logger.info("MaintenanceAgent running in Mock mode.")
-                return self._get_mock_rca(query)
-                
+                logger.info("MaintenanceAgent: Gemini unavailable, building grounded fallback RCA.")
+                return self._grounded_fallback_rca(context_chunks)
+
             model = genai.GenerativeModel("gemini-2.5-flash")
             response = model.generate_content(
                 prompt,
@@ -77,79 +83,49 @@ Do not wrap in markdown or add explanations outside the JSON block.
             )
             return json.loads(response.text.strip())
         except Exception as e:
-            logger.error(f"MaintenanceAgent RCA generation failed: {e}")
-            return self._get_mock_rca(query)
+            logger.error(f"MaintenanceAgent RCA generation failed: {e}. Falling back to grounded chunk-based RCA.")
+            return self._grounded_fallback_rca(context_chunks)
 
-    def _get_mock_rca(self, query: str) -> Dict[str, Any]:
-        # Predefined mock RCA report for Pump P-102 Centurion Plant
+    def _not_found_rca(self) -> Dict[str, Any]:
         return {
-            "equipment_id": "P-102",
-            "failure_mode": "Mechanical Seal Rupture due to High Shaft Vibration",
-            "chronology": [
-                "2026-05-08: Pre-operational inspection logs normal vibration levels (1.8 mm/s RMS).",
-                "2026-05-12: Standard operator logs mention a slight hum and leakage rate at 5 drops/min.",
-                "2026-05-14: Vibration monitor triggers alarm at 4.2 mm/s RMS. Operations reports primary seal rupture and manual shutdown."
-            ],
-            "timeline": [
-                {
-                    "time": "2026-05-08",
-                    "event": "Baseline Sweep",
-                    "status": "normal",
-                    "detail": "Radial vibration within normal limits (1.8 mm/s RMS)."
-                },
-                {
-                    "time": "2026-05-12",
-                    "event": "Hum & Leakage",
-                    "status": "warning",
-                    "detail": "Slight hum heard; mechanical seal leak reported at 5 drops/min."
-                },
-                {
-                    "time": "2026-05-13",
-                    "event": "Warning Ignored",
-                    "status": "ignored",
-                    "detail": "No corrective alignment was scheduled due to shift transition delays."
-                },
-                {
-                    "time": "2026-05-14",
-                    "event": "Critical Alarm",
-                    "status": "failure",
-                    "detail": "Vibration spikes to 4.2 mm/s RMS. Mechanical seal ruptures. Casing shutdown."
-                },
-                {
-                    "time": "2026-05-15",
-                    "event": "Realignment & Seal Swap",
-                    "status": "repair",
-                    "detail": "Mechanical Seal S-100 and Impeller Kit K-402 replaced. Realigned to 0.02 mm."
-                }
-            ],
-            "root_cause": "The primary root cause was structural shaft misalignment (0.08 mm vs. SOP limit of 0.05 mm) which occurred during the previous motor swap. This created dynamic offset stresses, causing impeller wobbling, bearing wear, and ultimate mechanical seal face degradation.",
-            "maintenance_actions_taken": [
-                "Pump shutdown and isolation locks applied.",
-                "Impeller casing opened; found worn seal faces and slight bearing clearance.",
-                "Replaced mechanical seal with Seal Model S-100.",
-                "Installed Impeller Kit K-402 to refresh rotating elements.",
-                "Performed laser shaft alignment, reducing radial tolerance to 0.02 mm."
-            ],
-            "preventive_recommendations": [
-                "Enforce mandatory laser alignment verification sheet signed off by QA after any motor decouplings.",
-                "Increase predictive vibration probe monitoring sweeps from monthly to bi-weekly on Train 2 rotary assets.",
-                "Add mechanical seal leak indicators to operator round checklist templates."
-            ],
-            "lessons_learned": [
-                "Coupling motor alignment cannot be performed by simple visual check or straight-edge methods.",
-                "Early leakage reports must trigger immediate corrective inspection, not just manual log notes."
-            ],
-            "confidence_score": 0.92,
+            "equipment_id": "",
+            "failure_mode": "No relevant information was found in the uploaded documents.",
+            "chronology": [],
+            "timeline": [],
+            "root_cause": "No relevant information was found in the uploaded documents.",
+            "maintenance_actions_taken": [],
+            "preventive_recommendations": [],
+            "lessons_learned": [],
+            "confidence_score": 0.0,
+            "reasoning_steps": ["No matching content was retrieved from the uploaded documents."],
+            "evidence_base": []
+        }
+
+    def _grounded_fallback_rca(self, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Non-fabricated fallback used when Gemini is unavailable but relevant chunks
+        were retrieved — surfaces the raw excerpts instead of a hardcoded demo RCA.
+        """
+        filenames = sorted({c.get("metadata", {}).get("filename", "Unknown Document") for c in context_chunks})
+        excerpt = "\n\n".join(
+            f"[{c.get('metadata', {}).get('filename', 'Unknown Document')}] {(c.get('page_content') or '').strip()[:1500]}"
+            for c in context_chunks[:3]
+        )
+        return {
+            "equipment_id": "",
+            "failure_mode": "AI reasoning unavailable — see retrieved excerpts below.",
+            "chronology": [],
+            "timeline": [],
+            "root_cause": f"AI reasoning is currently unavailable. Showing relevant excerpts retrieved from your uploaded documents instead:\n\n{excerpt}",
+            "maintenance_actions_taken": [],
+            "preventive_recommendations": [],
+            "lessons_learned": [],
+            "confidence_score": 0.3,
             "reasoning_steps": [
-                "Scanned operational history database for Pump P-102 work logs.",
-                "Correlated alignment values with SOP-MECH-022 criteria.",
-                "Matched historical vibration spike timings to telemetry data."
+                "Retrieved matching content from uploaded documents.",
+                "Gemini reasoning unavailable — returning raw excerpts instead of a structured RCA."
             ],
-            "evidence_base": [
-                "Inspection-C301.pdf Page 3: Telemetry threshold guidelines",
-                "WO-9844-RCA.xlsx Row 4: Logged maintenance vibration details",
-                "SOP-MECH-022.pdf Section 3.1: Alignment specifications"
-            ]
+            "evidence_base": filenames
         }
 
 

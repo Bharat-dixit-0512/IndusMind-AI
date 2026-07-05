@@ -3,8 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api import auth, documents, chat, graph, compliance, reports
-from app.db.session import SessionLocal, engine
-from app.db.base import Base
+from app.db.session import SessionLocal
 from app.db.init_db import init_db
 from app.services.graph_db import graph_db
 
@@ -54,16 +53,18 @@ def on_startup():
     except Exception as e:
         logger.error(f"Failed to initialize relational database on startup: {e}")
 
-    # 2. Reseed Neo4j with Centurion Plant if graph is active
+    # 2. Verify graph database connectivity (no demo data is seeded automatically —
+    #    the graph only reflects entities extracted from documents you actually
+    #    upload. Use POST /api/v1/graph/reseed to explicitly load the optional
+    #    Centurion Plant sample dataset for demo purposes.)
     try:
         logger.info("Checking Graph database connectivity...")
         if graph_db.active:
-            logger.info("Graph DB is active. Seeding/Verifying Centurion Plant nodes...")
-            graph_db.load_centurion_mock_graph()
+            logger.info("Graph DB is connected to Neo4j.")
         else:
-            logger.info("Graph DB is in mock mode. Centurion Plant mock dataset loaded.")
+            logger.info("Graph DB is in mock mode (in-memory, empty until documents are uploaded).")
     except Exception as e:
-        logger.error(f"Failed to verify/seed graph database: {e}")
+        logger.error(f"Failed to verify graph database connectivity: {e}")
 
 
 @app.get("/")

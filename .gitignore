@@ -59,6 +59,7 @@ dist/
 downloads/
 eggs/
 lib/
+!**/src/lib/
 lib64/
 parts/
 sdist/

@@ -1,23 +1,53 @@
 import os
+import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+FALLBACK_INDEX_FILENAME = "fallback_index.json"
 
 # Fallback basic text searcher class in case FAISS/Embeddings fail to initialize
 class BasicTextSearcher:
     """
     A pure Python fallback semantic-ish searcher based on overlap/keyword matching
     if FAISS or remote embeddings are offline or fail to compile on Python 3.14.
+
+    Persists to disk (see save/load) so that documents already indexed here are
+    not lost on process restart — otherwise, whenever FAISS/Gemini embeddings are
+    unavailable, a restart would silently make every previously-uploaded document
+    unsearchable even though it still shows as COMPLETED in the database.
     """
     def __init__(self):
-        self.chunks = []
-        self.metadatas = []
+        self.chunks: List[str] = []
+        self.metadatas: List[Dict[str, Any]] = []
 
     def add_texts(self, texts: List[str], metadatas: List[Dict[str, Any]]):
         self.chunks.extend(texts)
         self.metadatas.extend(metadatas)
+
+    def save(self, index_dir: str) -> None:
+        path = os.path.join(index_dir, FALLBACK_INDEX_FILENAME)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"chunks": self.chunks, "metadatas": self.metadatas}, f)
+            logger.info(f"Fallback text index persisted to disk at {path} ({len(self.chunks)} chunk(s)).")
+        except Exception as e:
+            logger.error(f"Failed to persist fallback text index: {e}")
+
+    def load(self, index_dir: str) -> None:
+        path = os.path.join(index_dir, FALLBACK_INDEX_FILENAME)
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.chunks = data.get("chunks", [])
+            self.metadatas = data.get("metadatas", [])
+            logger.info(f"Fallback text index loaded from disk at {path} ({len(self.chunks)} chunk(s)).")
+        except Exception as e:
+            logger.error(f"Failed to load fallback text index from {path}: {e}")
 
     def similarity_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         # Simple query term overlap ranking
@@ -51,6 +81,7 @@ class VectorStoreService:
         self.index_dir = settings.FAISS_INDEX_PATH
         self.db = None
         self.fallback_db = BasicTextSearcher()
+        self.fallback_db.load(self.index_dir)
         self._init_embeddings_and_faiss()
 
     def _init_embeddings_and_faiss(self):
@@ -100,9 +131,11 @@ class VectorStoreService:
         """
         Adds text chunks with metadata to the active index and persists it to disk.
         """
-        # Always feed the fallback
+        # Always feed the fallback, and persist it immediately so it survives a restart
         self.fallback_db.add_texts(texts, metadatas)
-        
+        self.fallback_db.save(self.index_dir)
+        logger.info(f"Indexing {len(texts)} chunk(s) into vector store (metadata sample: {metadatas[0] if metadatas else None})")
+
         if self.embeddings is None:
             logger.warning("Embeddings not initialized. Chunks saved only to fallback text index.")
             return
@@ -113,10 +146,10 @@ class VectorStoreService:
                 self.db = FAISS.from_texts(texts, self.embeddings, metadatas=metadatas)
             else:
                 self.db.add_texts(texts, metadatas=metadatas)
-            
+
             # Save the index locally
             self.db.save_local(self.index_dir)
-            logger.info("FAISS index successfully updated and saved to disk.")
+            logger.info(f"FAISS index successfully updated and saved to disk at {self.index_dir}.")
         except Exception as e:
             logger.error(f"Error adding chunks to FAISS index: {e}")
             # Do not raise, we have the fallback database
@@ -127,22 +160,22 @@ class VectorStoreService:
         Returns a list of dictionaries with 'page_content' and 'metadata'.
         """
         if self.db is None or self.embeddings is None:
-            logger.info("Vector DB not active. Running keyword search on fallback.")
-            return self.fallback_db.similarity_search(query, k=k)
+            logger.info(f"Vector DB not active. Running keyword search on fallback for query: {query!r}")
+            results = self.fallback_db.similarity_search(query, k=k)
+        else:
+            try:
+                raw_results = self.db.similarity_search_with_score(query, k=k)
+                results = [
+                    {"page_content": doc.page_content, "metadata": doc.metadata, "score": float(score)}
+                    for doc, score in raw_results
+                ]
+            except Exception as e:
+                logger.error(f"FAISS search failed: {e}. Executing fallback search...")
+                results = self.fallback_db.similarity_search(query, k=k)
 
-        try:
-            results = self.db.similarity_search_with_score(query, k=k)
-            formatted_results = []
-            for doc, score in results:
-                formatted_results.append({
-                    "page_content": doc.page_content,
-                    "metadata": doc.metadata,
-                    "score": float(score)
-                })
-            return formatted_results
-        except Exception as e:
-            logger.error(f"FAISS search failed: {e}. Executing fallback search...")
-            return self.fallback_db.similarity_search(query, k=k)
+        retrieved_docs = sorted({r.get("metadata", {}).get("filename", "Unknown Document") for r in results})
+        logger.info(f"Retrieved {len(results)} chunk(s) for query {query!r} from document(s): {retrieved_docs}")
+        return results
 
 
 # Singleton instance

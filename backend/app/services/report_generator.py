@@ -191,16 +191,3 @@ def generate_pdf_report(
     except Exception as e:
         logger.error(f"Failed to build PDF using ReportLab: {e}")
         raise e
-
-
-class ReportGeneratorService:
-    """
-    Thin object wrapper around generate_pdf_report for callers (e.g. ReportAgent)
-    that operate on a full output path rather than a bare filename.
-    """
-    def generate_pdf(self, output_path: str, title: str, report_type: str, data: dict) -> str:
-        filename = os.path.basename(output_path)
-        return generate_pdf_report(filename, title, report_type, data)
-
-
-report_generator = ReportGeneratorService()
