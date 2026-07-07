@@ -18,7 +18,7 @@ def ask_chat_agent(
     Intercepted by the central Planner Agent to orchestrate and format response
     with citations, confidence score, reasoning steps, timeline, and agent logs.
     """
-    result = planner_agent.handle_query(query.message)
+    result = planner_agent.handle_query(query.message, user_id=str(current_user.id))
     return ChatResponse(
         response=result.get("response", ""),
         citations=result.get("citations", []),

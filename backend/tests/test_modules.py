@@ -1,0 +1,122 @@
+"""
+Tests for the Maintenance / Compliance / Reports module integrations: they
+must auto-populate from the shared knowledge base (classification + graph +
+FAISS) after upload, and show explanatory empty states when the user has no
+relevant documents. Runs fully offline (see conftest.py).
+"""
+import io
+import uuid
+
+from conftest import register_user, auth_headers
+
+
+def unique_email(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}@example.com"
+
+
+MAINTENANCE_DOC = (
+    b"Maintenance Log - Work Order 4471\n"
+    b"Machine P-102 experienced a bearing failure and unplanned downtime.\n"
+    b"Technician replaced the mechanical seal. Preventive maintenance scheduled.\n"
+)
+SOP_DOC = (
+    b"Standard Operating Procedure SOP-MECH-022\n"
+    b"Purpose and scope: shaft alignment protocol. Responsibilities defined.\n"
+    b"Step 1: measure runout. The technician shall verify tolerance limits.\n"
+)
+
+
+def test_maintenance_overview_empty_state(client):
+    token = register_user(client, unique_email("maintempty"))
+    resp = client.get("/api/v1/maintenance/overview", headers=auth_headers(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["has_data"] is False
+    assert "upload" in body["message"].lower()
+    assert body["assets"] == []
+
+
+def test_maintenance_overview_populates_after_upload(client):
+    token = register_user(client, unique_email("maintfull"))
+    headers = auth_headers(token)
+    resp = client.post(
+        "/api/v1/documents/upload", headers=headers,
+        files={"file": ("work_order.txt", io.BytesIO(MAINTENANCE_DOC), "text/plain")},
+    )
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["id"]
+
+    # Classification runs in the background task (after the upload response is
+    # serialized), so re-fetch to confirm the category was auto-detected.
+    status = client.get(f"/api/v1/documents/status/{doc_id}", headers=headers).json()
+    assert status["category"] is not None
+
+    resp = client.get("/api/v1/maintenance/overview", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["has_data"] is True
+    # The P-102 machine should be discovered as an asset from the graph.
+    assert any(a["type"] == "Machine" for a in body["assets"])
+    assert len(body["documents"]) >= 1
+
+
+def test_compliance_overview_empty_state(client):
+    token = register_user(client, unique_email("compempty"))
+    resp = client.get("/api/v1/compliance/overview", headers=auth_headers(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["has_data"] is False
+    assert body["risk_level"] == "Unknown"
+    # With nothing uploaded, every compliance document class is "missing".
+    assert "SOP" in body["missing_documents"]
+
+
+def test_compliance_overview_detects_sop(client):
+    token = register_user(client, unique_email("compfull"))
+    headers = auth_headers(token)
+    resp = client.post(
+        "/api/v1/documents/upload", headers=headers,
+        files={"file": ("sop.txt", io.BytesIO(SOP_DOC), "text/plain")},
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = client.get("/api/v1/compliance/overview", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["has_data"] is True
+    assert any(d["category"] == "SOP" for d in body["detected_documents"])
+    assert body["risk_level"] in ("Low", "Medium", "High", "Critical")
+
+
+def test_report_generation_and_ownership(client):
+    token = register_user(client, unique_email("report"))
+    headers = auth_headers(token)
+    client.post(
+        "/api/v1/documents/upload", headers=headers,
+        files={"file": ("wo.txt", io.BytesIO(MAINTENANCE_DOC), "text/plain")},
+    )
+
+    # Every report type (including the new EXECUTIVE) must generate a PDF.
+    for rtype in ["RCA", "COMPLIANCE", "MAINTENANCE", "INSPECTION", "EXECUTIVE"]:
+        resp = client.post(
+            "/api/v1/reports/generate", headers=headers,
+            json={"title": f"{rtype} for P-102", "report_type": rtype},
+        )
+        assert resp.status_code == 201, f"{rtype}: {resp.text}"
+        report = resp.json()
+        assert report["report_type"] == rtype
+        dl = client.get(f"/api/v1/reports/download/{report['id']}", headers=headers)
+        assert dl.status_code == 200
+        assert dl.headers["content-type"] == "application/pdf"
+
+    # A different user must not see or download another user's reports.
+    other = register_user(client, unique_email("reportother"))
+    listing = client.get("/api/v1/reports/list", headers=auth_headers(other))
+    assert listing.status_code == 200
+    assert listing.json() == []
+
+    my_reports = client.get("/api/v1/reports/list", headers=headers).json()
+    assert len(my_reports) == 5
+    victim_id = my_reports[0]["id"]
+    resp = client.get(f"/api/v1/reports/download/{victim_id}", headers=auth_headers(other))
+    assert resp.status_code == 404

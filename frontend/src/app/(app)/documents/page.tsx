@@ -70,18 +70,10 @@ export default function DocumentsPage() {
     }
   };
 
-  const sampleDocs: DocumentRecord[] = [
-    { id: "1", filename: "Manual-Pump-P102.pdf",         file_type: "pdf",  file_size: 2400000, status: "COMPLETED",  uploaded_by: "", created_at: "2026-05-14T09:00:00Z" },
-    { id: "2", filename: "SOP-MECH-022.pdf",             file_type: "pdf",  file_size: 800000,  status: "COMPLETED",  uploaded_by: "", created_at: "2026-05-14T09:05:00Z" },
-    { id: "3", filename: "WO-9844-RCA.xlsx",             file_type: "xlsx", file_size: 120000,  status: "COMPLETED",  uploaded_by: "", created_at: "2026-05-14T10:00:00Z" },
-    { id: "4", filename: "Inspection-C301-Jun2026.pdf",  file_type: "pdf",  file_size: 650000,  status: "PROCESSING", uploaded_by: "", created_at: "2026-06-28T14:00:00Z" },
-    { id: "5", filename: "Maintenance-Log-Jun2026.xlsx", file_type: "xlsx", file_size: 200000,  status: "PENDING",    uploaded_by: "", created_at: "2026-07-01T08:30:00Z" },
-    { id: "6", filename: "Centurion-Plant-Overview.pdf", file_type: "pdf",  file_size: 5100000, status: "COMPLETED",  uploaded_by: "", created_at: "2026-04-10T11:00:00Z" },
-  ];
-  const displayDocs = docs.length > 0 ? docs : sampleDocs;
+  const displayDocs = docs;
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-100">Document Management</h1>
         <p className="text-sm text-slate-500 mt-1">Upload manuals, SOPs, maintenance records, and inspection reports for AI indexing.</p>
@@ -154,6 +146,12 @@ export default function DocumentsPage() {
         {loading ? (
           <div className="p-6 space-y-3">
             {[...Array(4)].map((_, i) => <div key={i} className="h-14 rounded-xl animate-pulse" style={{ background: "rgba(255,255,255,0.03)" }} />)}
+          </div>
+        ) : displayDocs.length === 0 ? (
+          <div className="p-10 text-center">
+            <FileText className="w-8 h-8 mx-auto mb-3 text-slate-700" />
+            <p className="text-sm text-slate-500">No documents uploaded yet.</p>
+            <p className="text-xs text-slate-600 mt-1">Drop a file above to start building your knowledge base.</p>
           </div>
         ) : (
           <div className="divide-y" style={{ borderColor: "rgba(255,255,255,0.04)" }}>

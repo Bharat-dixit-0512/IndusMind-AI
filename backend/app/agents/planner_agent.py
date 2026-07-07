@@ -1,5 +1,4 @@
 import logging
-import re
 from typing import Dict, Any, List
 import google.generativeai as genai
 
@@ -11,6 +10,90 @@ from app.agents.maintenance_agent import maintenance_agent
 from app.agents.knowledge_agent import knowledge_agent
 
 logger = logging.getLogger(__name__)
+
+
+# Query keywords that indicate the user is asking to enumerate a whole category
+# of entities (e.g. "what skills are mentioned") rather than look up one named
+# entity — mapped to the graph node type(s) they should pull in.
+_CATEGORY_KEYWORDS: Dict[str, List[str]] = {
+    "Skill": ["skill", "skills", "technology", "technologies", "programming language"],
+    "Organization": ["organization", "organizations", "organisation", "company", "companies", "employer"],
+    "Project": ["project", "projects"],
+    "Person": ["person", "people", "contact", "contacts"],
+    "Date": ["date", "dates", "timeline"],
+    "Event": ["event", "events"],
+}
+
+
+def _graph_entity_context(query: str, user_id: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Finds knowledge-graph nodes relevant to this query — either a specific named
+    entity mentioned in the query text, or (for "what skills/organizations/etc.
+    are mentioned" style questions) every node of the matching category — and
+    returns:
+      - graph_triples: (source, label, target) triples for the matched nodes'
+        immediate neighborhood, to feed into the Gemini prompt as context.
+      - graph_visual_context: the matched neighborhood (or the whole graph, if
+        nothing matched) for the frontend graph view.
+
+    Only nodes owned by `user_id` (or ownerless legacy/demo-seeded nodes) are
+    ever considered — entities extracted from another user's documents must
+    never leak into this user's retrieval or answers.
+
+    This generalizes beyond the old industrial equipment-ID-only regex match —
+    any extracted entity (Person, Organization, Skill, Project, Machine, etc.)
+    can be matched, so retrieval works the same for a resume or a ticket as it
+    does for a maintenance record.
+    """
+    graph_data = graph_db.get_all_nodes_and_edges()
+    owned_nodes = [
+        n for n in graph_data.get("nodes", [])
+        if n.get("data", {}).get("user_id") in (None, user_id)
+    ]
+    owned_ids = {n["id"] for n in owned_nodes}
+    all_edges = [
+        e for e in graph_data.get("relationships", [])
+        if e["source"] in owned_ids and e["target"] in owned_ids
+    ]
+
+    query_lower = query.lower()
+    matched_ids = set()
+    for node in owned_nodes:
+        data = node.get("data", {})
+        name = str(data.get("name") or data.get("id") or "")
+        if len(name) >= 3 and name.lower() in query_lower:
+            matched_ids.add(node["id"])
+
+    # Category-style questions ("what skills are mentioned?") pull in every
+    # owned node of the relevant type(s), capped to keep the context concise.
+    for node_type, keywords in _CATEGORY_KEYWORDS.items():
+        if any(kw in query_lower for kw in keywords):
+            type_matches = [n["id"] for n in owned_nodes if n.get("type") == node_type][:20]
+            matched_ids.update(type_matches)
+
+    graph_triples = []
+    related_ids = set(matched_ids)
+    if matched_ids:
+        nodes_by_id = {n["id"]: n for n in owned_nodes}
+        for edge in all_edges:
+            if edge["source"] in matched_ids or edge["target"] in matched_ids:
+                related_ids.add(edge["source"])
+                related_ids.add(edge["target"])
+                src, tgt = nodes_by_id.get(edge["source"]), nodes_by_id.get(edge["target"])
+                if src and tgt:
+                    graph_triples.append({
+                        "source": f"{src['type']}: {src['data'].get('name', src['data'].get('id'))}",
+                        "label": edge["label"],
+                        "target": f"{tgt['type']}: {tgt['data'].get('name', tgt['data'].get('id'))}"
+                    })
+        graph_visual_context = {
+            "nodes": [n for n in owned_nodes if n["id"] in related_ids],
+            "relationships": [e for e in all_edges if e["source"] in related_ids and e["target"] in related_ids]
+        }
+    else:
+        graph_visual_context = {"nodes": owned_nodes, "relationships": all_edges}
+
+    return graph_triples, graph_visual_context
 
 
 def _citations_from_chunks(chunks: List[Dict[str, Any]], note: str, limit: int = 3) -> List[Dict[str, Any]]:
@@ -85,76 +168,35 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
             logger.error(f"Intent classification failed: {e}")
             return "GENERAL_QA"
 
-    def handle_query(self, query: str) -> Dict[str, Any]:
+    def handle_query(self, query: str, user_id: str) -> Dict[str, Any]:
         """
         Orchestration flow:
         1. Classifies intent.
-        2. Retrieves RAG vector chunks and graph neighborhood.
+        2. Retrieves RAG vector chunks (restricted to this user's own uploaded
+           documents) and graph neighborhood.
         3. Invokes specific agent.
         4. Injects agent log trace steps for the frontend Agent Activity log.
         5. Formulates structured response conforming to the ChatResponse schema.
         """
-        logger.info(f"Planner Agent received query: {query}")
-        
+        logger.info(f"Planner Agent received query: {query} (user_id={user_id})")
+
         agent_logs = [
             {"agent_name": "Planner Agent", "status": "COMPLETED", "log_message": "Classified user query intent."}
         ]
-        
+
         # 1. Classify
         intent = self.classify_intent(query)
         logger.info(f"Classified query intent: {intent}")
 
-        # 2. Retrieve Context (Hybrid RAG)
-        agent_logs.append({"agent_name": "Retriever Service", "status": "COMPLETED", "log_message": "Fetched FAISS semantic text chunks and Neo4j graph entities."})
-        vector_chunks = vector_store.search(query, k=5)
-        
-        graph_triples = []
-        graph_visual_context = []
-        
-        # Scan query for equipment IDs
-        equipment_ids = re.findall(r'\b([PCDT]-\d{3})\b', query, re.IGNORECASE)
-        for eq_id in set(equipment_ids):
-            eq_id_upper = eq_id.upper()
-            if graph_db.active:
-                cypher = """
-                MATCH (s {id: $eq_id})-[r]-(t)
-                RETURN labels(s)[0] as s_label, s.name as s_name, 
-                       type(r) as r_label, 
-                       labels(t)[0] as t_label, t.name as t_name, t.id as t_id
-                LIMIT 20
-                """
-                records = graph_db.execute_read(cypher, {"eq_id": eq_id_upper})
-                for rec in records:
-                    graph_triples.append({
-                        "source": f"{rec['s_label']}: {rec['s_name'] or eq_id_upper}",
-                        "label": rec["r_label"],
-                        "target": f"{rec['t_label']}: {rec['t_name'] or rec['t_id']}"
-                    })
-            else:
-                # Mock neighborhood graph extraction
-                mock_data = graph_db.get_all_nodes_and_edges()
-                related_ids = set()
-                asset_node = next((n for n in mock_data["nodes"] if n["data"].get("id") == eq_id_upper), None)
-                if asset_node:
-                    related_ids.add(asset_node["id"])
-                    for edge in mock_data["relationships"]:
-                        if edge["source"] == asset_node["id"] or edge["target"] == asset_node["id"]:
-                            related_ids.add(edge["source"])
-                            related_ids.add(edge["target"])
-                            src = next(n for n in mock_data["nodes"] if n["id"] == edge["source"])
-                            tgt = next(n for n in mock_data["nodes"] if n["id"] == edge["target"])
-                            graph_triples.append({
-                                "source": f"{src['type']}: {src['data'].get('name')}",
-                                "label": edge["label"],
-                                "target": f"{tgt['type']}: {tgt['data'].get('name')}"
-                            })
-                    graph_visual_context = {
-                        "nodes": [n for n in mock_data["nodes"] if n["id"] in related_ids],
-                        "relationships": [e for e in mock_data["relationships"] if e["source"] in related_ids and e["target"] in related_ids]
-                    }
-
-        if not graph_visual_context:
-            graph_visual_context = graph_db.get_all_nodes_and_edges()
+        # 2. Retrieve Context (Hybrid RAG): FAISS + keyword chunks (see
+        # vector_store.search) scoped to this user's own documents, plus any
+        # knowledge-graph entities mentioned by name in the query.
+        agent_logs.append({"agent_name": "Retriever Service", "status": "COMPLETED", "log_message": "Fetched hybrid FAISS/keyword text chunks and knowledge graph entities."})
+        # k=8 (rather than a bare top-5) so a thorough question ("what do I need
+        # to know about X") gets enough retrieved material to answer completely,
+        # not just the single closest-matching snippet.
+        vector_chunks = vector_store.search(query, k=8, user_id=user_id)
+        graph_triples, graph_visual_context = _graph_entity_context(query, user_id)
 
         # 3. Route & Process
         result = self._route(intent, query, vector_chunks, graph_triples, graph_visual_context, agent_logs)
@@ -196,9 +238,15 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
                     for action in report.get("corrective_actions", []):
                         markdown_response += f"1. {action}\n"
 
+            # Only cite chunks when the agent actually found relevant content
+            # (confidence_score > 0) — otherwise a document that was merely
+            # retrieved by a loose keyword match, but explicitly judged
+            # irrelevant by the not-found path, would be shown as "evidence"
+            # for an answer that says no information was found.
+            cited_chunks = vector_chunks if report.get("confidence_score", 0.0) > 0 else []
             return {
                 "response": markdown_response,
-                "citations": _citations_from_chunks(vector_chunks, "Compliance-relevant excerpt from uploaded document."),
+                "citations": _citations_from_chunks(cited_chunks, "Compliance-relevant excerpt from uploaded document."),
                 "graph_context": graph_visual_context.get("nodes", []) if isinstance(graph_visual_context, dict) else [],
                 "confidence_score": report.get("confidence_score", 0.0),
                 "reasoning_steps": report.get("reasoning_steps", []),
@@ -230,9 +278,10 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
                     for item in report.get("preventive_recommendations", []):
                         markdown_response += f"- {item}\n"
 
+            cited_chunks = vector_chunks if report.get("confidence_score", 0.0) > 0 else []
             return {
                 "response": markdown_response,
-                "citations": _citations_from_chunks(vector_chunks, "RCA-relevant excerpt from uploaded document."),
+                "citations": _citations_from_chunks(cited_chunks, "RCA-relevant excerpt from uploaded document."),
                 "graph_context": graph_visual_context.get("nodes", []) if isinstance(graph_visual_context, dict) else [],
                 "confidence_score": report.get("confidence_score", 0.0),
                 "reasoning_steps": report.get("reasoning_steps", []),
@@ -245,9 +294,10 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
             agent_logs.append({"agent_name": "Knowledge Agent", "status": "COMPLETED", "log_message": "Retrieving relevant procedures/manuals from the uploaded documents."})
             report = knowledge_agent.retrieve_sop_or_manual(query, vector_chunks)
 
+            cited_chunks = vector_chunks if report.get("confidence_score", 0.0) > 0 else []
             return {
                 "response": report.get("response", ""),
-                "citations": _citations_from_chunks(vector_chunks, "Reference excerpt from uploaded document."),
+                "citations": _citations_from_chunks(cited_chunks, "Reference excerpt from uploaded document."),
                 "graph_context": graph_visual_context.get("nodes", []) if isinstance(graph_visual_context, dict) else [],
                 "confidence_score": report.get("confidence_score", 0.0),
                 "reasoning_steps": report.get("reasoning_steps", []),

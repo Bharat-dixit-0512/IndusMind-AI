@@ -3,9 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { listDocuments, type DocumentRecord } from "@/lib/api";
 import {
-  FileText, Cpu, ShieldCheck,
-  AlertTriangle, CheckCircle2, Clock, Upload,
-  Activity, ShieldAlert, BookOpen, MessageSquare, QrCode
+  FileText, AlertTriangle, CheckCircle2, Clock, Upload, QrCode
 } from "lucide-react";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
@@ -81,31 +79,23 @@ export default function DashboardPage() {
   }, [fetchDocs]);
 
   const completed = docs.filter(d => d.status === "COMPLETED").length;
-  const complianceScore = docs.length ? Math.round((completed / docs.length) * 100) : 89;
+  const processing = docs.filter(d => d.status === "PROCESSING" || d.status === "PENDING").length;
+  const failed = docs.filter(d => d.status === "FAILED").length;
+  const indexedPct = docs.length ? Math.round((completed / docs.length) * 100) : 0;
 
   const stats: StatCard[] = [
-    { label: "Plant Health Index",  value: "92%",         icon: Activity,    color: "#10b981", sub: "Train 2 Stabilized", trend: "Optimal", trendUp: true },
-    { label: "Compliance Score",    value: `${complianceScore}%`, icon: ShieldCheck, color: "#3b82f6", sub: "Audited vs SOP-MECH", trend: "+1.2%", trendUp: true },
-    { label: "Pending Maintenance", value: "6 Tasks",     icon: Cpu,         color: "#f59e0b", sub: "WO-9844 Resolved", trend: "Normal", trendUp: true },
-    { label: "Critical Alerts",     value: "2 Alerts",     icon: ShieldAlert, color: "#ef4444", sub: "C-301 Temperature High", trend: "High Risk", trendUp: false },
-    { label: "Knowledge Coverage",  value: "94%",         icon: BookOpen,    color: "#8b5cf6", sub: "24 SOPs & OEM Manuals", trend: "Updated", trendUp: true },
-    { label: "AI Queries Today",    value: "108 Requests", icon: MessageSquare, color: "#ec4899", sub: "Active Engineers: 8", trend: "+24%", trendUp: true }
+    { label: "Documents Uploaded", value: docs.length, icon: FileText, color: "#3b82f6" },
+    { label: "Indexed & Searchable", value: completed, icon: CheckCircle2, color: "#10b981", sub: docs.length ? `${indexedPct}% of uploads` : undefined },
+    { label: "Processing", value: processing, icon: Clock, color: "#f59e0b" },
+    { label: "Failed", value: failed, icon: AlertTriangle, color: "#ef4444" },
   ];
 
-  const sampleDocs: DocumentRecord[] = docs.length > 0 ? docs.slice(0, 5) : [
-    { id: "1", filename: "Manual-Pump-P102.pdf",         file_type: "pdf",  file_size: 2400000, status: "COMPLETED",  uploaded_by: "", created_at: "2026-05-14T09:00:00Z" },
-    { id: "2", filename: "SOP-MECH-022.pdf",             file_type: "pdf",  file_size: 800000,  status: "COMPLETED",  uploaded_by: "", created_at: "2026-05-14T09:05:00Z" },
-    { id: "3", filename: "WO-9844-RCA.xlsx",             file_type: "xlsx", file_size: 120000,  status: "COMPLETED",  uploaded_by: "", created_at: "2026-05-14T10:00:00Z" },
-    { id: "4", filename: "Inspection-Report-C301.pdf",   file_type: "pdf",  file_size: 650000,  status: "PROCESSING", uploaded_by: "", created_at: "2026-06-28T14:00:00Z" },
-    { id: "5", filename: "Maintenance-Log-Jun2026.xlsx", file_type: "xlsx", file_size: 200000,  status: "PENDING",    uploaded_by: "", created_at: "2026-07-01T08:30:00Z" },
-  ];
+  const recentDocs: DocumentRecord[] = docs.slice(0, 5);
 
   const suggestedQueries = [
-    "Why did Pump P-102 fail?",
-    "Show me SOP for Pump P-102",
-    "Generate RCA for Compressor C-301",
-    "Check compliance of last inspection",
-    "Find SOP for shaft alignment limits",
+    "What documents have I uploaded?",
+    "Summarize my most recent upload",
+    "What are the key details in my documents?",
   ];
 
   const handleSimulateQr = () => {
@@ -114,18 +104,18 @@ export default function DashboardPage() {
       setQrScanning(false);
       setShowQrSim(false);
       // Redirect directly to chat pre-filled with the scanned asset question
-      router.push(`/chat?q=${encodeURIComponent("Show me SOP for Pump P-102")}`);
+      router.push(`/chat?q=${encodeURIComponent("What documents do I have for this asset?")}`);
     }, 2200);
   };
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-xs text-emerald-400 font-medium">Centurion Plant — Train 2 — All Systems Monitored</span>
+            <span className="text-xs text-emerald-400 font-medium">Document Intelligence Platform — Active</span>
           </div>
           <h1 className="text-3xl font-bold text-slate-100">
             Good {new Date().getHours() < 12 ? "morning" : "afternoon"},{" "}
@@ -145,7 +135,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
         {stats.map(s => <StatTile key={s.label} {...s} />)}
       </div>
 
@@ -158,9 +148,11 @@ export default function DashboardPage() {
           </div>
           {loading ? (
             <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-12 rounded-lg animate-pulse" style={{ background: "rgba(255,255,255,0.03)" }} />)}</div>
+          ) : recentDocs.length === 0 ? (
+            <p className="text-xs text-slate-600 py-4 text-center">No documents uploaded yet.</p>
           ) : (
             <div className="space-y-2">
-              {sampleDocs.map(doc => (
+              {recentDocs.map(doc => (
                 <div key={doc.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors"
                   style={{ background: "rgba(255,255,255,0.02)" }}>
                   <FileText className="w-4 h-4 text-blue-400 flex-shrink-0" />
@@ -231,7 +223,7 @@ export default function DashboardPage() {
               ) : (
                 <div className="text-center p-4">
                   <QrCode className="w-16 h-16 text-slate-600 mx-auto mb-2" />
-                  <p className="text-xs text-slate-400">Position scanner over Pump P-102 tag</p>
+                  <p className="text-xs text-slate-400">Position scanner over an asset tag</p>
                 </div>
               )}
             </div>
@@ -245,7 +237,7 @@ export default function DashboardPage() {
               <button onClick={handleSimulateQr} disabled={qrScanning}
                 className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white transition-all"
                 style={{ background: "linear-gradient(135deg, #8b5cf6, #6d28d9)" }}>
-                {qrScanning ? "Scanning Tag…" : "Scan Pump P-102"}
+                {qrScanning ? "Scanning Tag…" : "Scan Asset Tag"}
               </button>
             </div>
           </div>

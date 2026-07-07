@@ -25,6 +25,11 @@ class Document(Base):
     status = Column(Enum(DocumentStatus), default=DocumentStatus.PENDING, nullable=False)
     error_message = Column(String, nullable=True)
     file_size = Column(Integer, nullable=False)
+    # Auto-detected document type (see app.services.document_classifier),
+    # populated during background processing. Drives the Maintenance /
+    # Compliance / Reports dashboards. Nullable so pre-existing rows and
+    # still-processing uploads are valid.
+    category = Column(String, nullable=True)
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

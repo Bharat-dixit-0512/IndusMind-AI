@@ -7,7 +7,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Industrial AI Brain | Centurion Petrochemical Plant",
+  title: "Industrial AI Brain",
   description:
     "Enterprise-grade AI platform for unified asset & operations intelligence. Upload manuals, SOPs, inspection reports and ask engineering questions with full source citations.",
   keywords: ["industrial AI", "knowledge graph", "RAG", "maintenance intelligence", "compliance"],

@@ -12,7 +12,7 @@ from app.services.vector_store import vector_store
 logger = logging.getLogger(__name__)
 
 
-def process_document_task(document_id: str) -> None:
+def process_document_task(document_id: str, session_id: str) -> None:
     """
     Synchronous processing function intended to be run in a background executor.
     Opens its own DB session since the request-scoped session is closed by the
@@ -51,6 +51,18 @@ def process_document_task(document_id: str) -> None:
             
         logger.info(f"Text extraction complete. Characters extracted: {len(text_content)}")
 
+        # Step 1.5: Auto-classify the document type from its own text, so the
+        # Maintenance / Compliance / Reports dashboards can be populated
+        # automatically. Non-blocking: a classification failure must never
+        # fail the whole upload.
+        try:
+            from app.services.document_classifier import classify_document
+            document.category = classify_document(text_content, document.filename)
+            db.commit()
+            logger.info(f"Document classified as: {document.category}")
+        except Exception as classify_err:
+            logger.error(f"Document classification failed (non-blocking): {classify_err}")
+
         # Step 2: Chunking
         logger.info("Splitting text into chunks...")
         chunks = split_text_into_chunks(text_content)
@@ -72,8 +84,11 @@ def process_document_task(document_id: str) -> None:
             texts_to_embed.append(chunk_text)
             metadatas_to_embed.append({
                 "document_id": str(document.id),
+                "user_id": str(document.uploaded_by),
                 "filename": document.filename,
-                "chunk_index": idx
+                "chunk_index": idx,
+                "upload_time": document.created_at.isoformat() if document.created_at else None,
+                "session_id": session_id,
             })
             
         # Commit to Postgres to generate chunk IDs
@@ -88,7 +103,7 @@ def process_document_task(document_id: str) -> None:
         logger.info("Extracting entities and relationships for Neo4j...")
         try:
             from app.services.entity_extractor import extract_and_sync_entities
-            extract_and_sync_entities(document.filename, text_content)
+            extract_and_sync_entities(document.filename, text_content, str(document.uploaded_by), str(document.id))
             logger.info("Neo4j knowledge graph updated successfully.")
         except Exception as graph_err:
             logger.error(f"Neo4j extraction/sync failed (non-blocking for document status): {graph_err}")

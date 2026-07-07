@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, List
 import google.generativeai as genai
 import json
-from app.services.gemini_service import gemini_service, format_chunks_as_context
+from app.services.gemini_service import gemini_service, format_chunks_as_context, extractive_answer, not_found_message
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +22,17 @@ class ComplianceAgent:
 
         if not context_chunks:
             logger.info("ComplianceAgent: no context chunks retrieved, returning not-found report.")
-            return self._not_found_report()
+            return self._not_found_report(query)
 
         context_str = format_chunks_as_context(context_chunks)
 
         prompt = f"""
-You are a compliance auditor. Your task is to analyze the provided inspection/audit content
-against any procedure or standard limits found in the SAME context. Use ONLY the context below —
-never introduce facts, parameters, or limits that are not present in it.
+You are a senior compliance auditor briefing a plant/business owner on exactly what they
+need to know. Your task is to analyze the provided inspection/audit content against any
+procedure or standard limits found in the SAME context. Use ONLY the context below — never
+introduce facts, parameters, or limits that are not present in it, but be thorough: surface
+every relevant parameter, figure, and deviation the context actually contains, not just the
+first one you find.
 
 Retrieved Document Context:
 ---
@@ -46,6 +49,8 @@ Please perform the following audit strictly from the context above:
 5. Compute a general Compliance Score (0 to 100%) based only on what is present.
 6. Formulate corrective actions grounded in the context.
 7. Include confidence and explainability metrics.
+8. Write "summary" as a complete briefing a busy owner could act on directly — not a one-line
+   restatement of the question.
 
 If the context does not contain enough information to audit compliance, set "compliance_score" to 0,
 leave "checklist" and "corrective_actions" empty, and explain this in "summary".
@@ -69,8 +74,8 @@ Do not wrap in markdown or add explanations outside the JSON block.
 
         try:
             if not self.active:
-                logger.info("ComplianceAgent: Gemini unavailable, building grounded fallback report.")
-                return self._grounded_fallback_report(context_chunks)
+                logger.info("ComplianceAgent: Gemini unavailable, building extractive summary report.")
+                return self._extractive_report(query, context_chunks)
 
             model = genai.GenerativeModel("gemini-2.5-flash")
             response = model.generate_content(
@@ -79,13 +84,13 @@ Do not wrap in markdown or add explanations outside the JSON block.
             )
             return json.loads(response.text.strip())
         except Exception as e:
-            logger.error(f"ComplianceAgent evaluation failed: {e}. Falling back to grounded chunk-based report.")
-            return self._grounded_fallback_report(context_chunks)
+            logger.error(f"ComplianceAgent evaluation failed: {e}. Falling back to extractive summary.")
+            return self._extractive_report(query, context_chunks)
 
-    def _not_found_report(self) -> Dict[str, Any]:
+    def _not_found_report(self, query: str) -> Dict[str, Any]:
         return {
             "compliance_score": 0,
-            "summary": "No relevant information was found in the uploaded documents.",
+            "summary": not_found_message(query),
             "checklist": [],
             "corrective_actions": [],
             "confidence_score": 0.0,
@@ -93,27 +98,26 @@ Do not wrap in markdown or add explanations outside the JSON block.
             "evidence_base": []
         }
 
-    def _grounded_fallback_report(self, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _extractive_report(self, query: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Non-fabricated fallback used when Gemini is unavailable but relevant chunks
-        were retrieved — surfaces the raw excerpts instead of a hardcoded demo report.
+        Non-fabricated fallback used when Gemini is unavailable — builds a concise
+        extractive summary from the retrieved chunks (never a raw excerpt dump,
+        and never hardcoded/demo content).
         """
-        filenames = sorted({c.get("metadata", {}).get("filename", "Unknown Document") for c in context_chunks})
-        excerpt = "\n\n".join(
-            f"[{c.get('metadata', {}).get('filename', 'Unknown Document')}] {(c.get('page_content') or '').strip()[:1500]}"
-            for c in context_chunks[:3]
-        )
+        summary, citations = extractive_answer(query, context_chunks)
+        if not citations:
+            return self._not_found_report(query)
         return {
             "compliance_score": 0,
-            "summary": f"AI reasoning is currently unavailable. Showing relevant excerpts retrieved from your uploaded documents instead:\n\n{excerpt}",
+            "summary": f"AI reasoning is currently unavailable. Summary from your uploaded documents: {summary}",
             "checklist": [],
             "corrective_actions": [],
             "confidence_score": 0.3,
             "reasoning_steps": [
                 "Retrieved matching content from uploaded documents.",
-                "Gemini reasoning unavailable — returning raw excerpts instead of a structured audit."
+                "Gemini reasoning unavailable — returning an extractive summary instead of a structured audit."
             ],
-            "evidence_base": filenames
+            "evidence_base": sorted({c["document_name"] for c in citations})
         }
 
 

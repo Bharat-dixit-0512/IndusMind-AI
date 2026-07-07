@@ -6,8 +6,8 @@ import ReactFlow, {
   type Node, type Edge,
 } from "reactflow";
 import "reactflow/dist/style.css";
-import { fetchGraph } from "@/lib/api";
-import { Network, RefreshCw, Info } from "lucide-react";
+import { fetchGraph, fetchRecurringPatterns, type RecurringPattern } from "@/lib/api";
+import { Network, RefreshCw, Info, Sparkles } from "lucide-react";
 
 // Color map per node type
 const TYPE_COLORS: Record<string, { bg: string; border: string; text: string }> = {
@@ -19,6 +19,14 @@ const TYPE_COLORS: Record<string, { bg: string; border: string; text: string }> 
   SOP:               { bg: "#1a1225", border: "#8b5cf6", text: "#c4b5fd" },
   Location:          { bg: "#0f1f1a", border: "#14b8a6", text: "#2dd4bf" },
   SparePart:         { bg: "#1f1205", border: "#f97316", text: "#fb923c" },
+  Document:          { bg: "#1e1b12", border: "#eab308", text: "#facc15" },
+  Person:            { bg: "#1a1f35", border: "#818cf8", text: "#a5b4fc" },
+  Organization:      { bg: "#12241f", border: "#059669", text: "#34d399" },
+  Skill:             { bg: "#1a0f2a", border: "#a855f7", text: "#d8b4fe" },
+  Project:           { bg: "#0f1a2a", border: "#38bdf8", text: "#7dd3fc" },
+  Event:             { bg: "#2a1a0f", border: "#fb923c", text: "#fdba74" },
+  Date:              { bg: "#171717", border: "#a3a3a3", text: "#d4d4d4" },
+  Contact:           { bg: "#0f1f24", border: "#22d3ee", text: "#67e8f9" },
 };
 
 // Custom node renderer
@@ -83,6 +91,7 @@ export default function GraphPage() {
   const [rfEdges, setRfEdges] = useState<Edge[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Node | null>(null);
+  const [patterns, setPatterns] = useState<RecurringPattern[]>([]);
 
   const loadGraph = useCallback(() => {
     setLoading(true);
@@ -97,6 +106,7 @@ export default function GraphPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+    fetchRecurringPatterns().then(setPatterns).catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -105,7 +115,7 @@ export default function GraphPage() {
   }, [loadGraph]);
 
   return (
-    <div className="flex flex-col h-screen p-8">
+    <div className="flex flex-col h-screen p-4 md:p-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div>
@@ -115,7 +125,7 @@ export default function GraphPage() {
             </div>
             <h1 className="text-2xl font-bold text-slate-100">Knowledge Graph</h1>
           </div>
-          <p className="text-sm text-slate-500 mt-1 ml-11">Live Neo4j graph — Centurion Petrochemical Plant Train 2</p>
+          <p className="text-sm text-slate-500 mt-1 ml-11">Live knowledge graph — entities extracted from your uploaded documents</p>
         </div>
         <button onClick={loadGraph} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm text-slate-300 transition-all"
           style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}>
@@ -123,9 +133,9 @@ export default function GraphPage() {
         </button>
       </div>
 
-      <div className="flex gap-4 flex-1 min-h-0">
+      <div className="flex flex-col md:flex-row gap-4 flex-1 min-h-0">
         {/* Main graph canvas */}
-        <div className="flex-1 rounded-2xl overflow-hidden" style={{ background: "#05070f", border: "1px solid rgba(255,255,255,0.06)" }}>
+        <div className="flex-1 min-h-[360px] md:min-h-0 rounded-2xl overflow-hidden" style={{ background: "#05070f", border: "1px solid rgba(255,255,255,0.06)" }}>
           {loading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
@@ -153,16 +163,20 @@ export default function GraphPage() {
           )}
         </div>
 
-        {/* Side panel */}
-        <div className="w-56 flex flex-col gap-4">
+        {/* Side panel — scrolls independently so a long Node Types legend
+            never pushes Selected Node / Recurring Patterns / Stats off-screen
+            with no way to reach them (the side panel gets a fixed height from
+            flex-stretch against the canvas, so without its own overflow the
+            lower cards would just overflow invisibly). */}
+        <div className="w-full md:w-56 flex flex-col gap-4 flex-shrink-0 overflow-y-auto pr-1">
           {/* Legend */}
-          <div className="glass-card rounded-2xl p-4">
+          <div className="glass-card rounded-2xl p-4 flex-shrink-0">
             <p className="text-xs font-semibold text-slate-400 mb-3">Node Types</p>
-            <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
               {LEGEND.map(l => (
-                <div key={l.type} className="flex items-center gap-2.5">
-                  <div className="w-3 h-3 rounded-sm flex-shrink-0" style={{ background: l.bg, border: `1.5px solid ${l.border}` }} />
-                  <span className="text-xs text-slate-400">{l.type}</span>
+                <div key={l.type} className="flex items-center gap-1.5 min-w-0">
+                  <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: l.bg, border: `1.5px solid ${l.border}` }} />
+                  <span className="text-xs text-slate-400 truncate">{l.type}</span>
                 </div>
               ))}
             </div>
@@ -170,7 +184,7 @@ export default function GraphPage() {
 
           {/* Node detail */}
           {selected && (
-            <div className="glass-card rounded-2xl p-4 flex-1 overflow-y-auto">
+            <div className="glass-card rounded-2xl p-4 max-h-64 overflow-y-auto flex-shrink-0">
               <div className="flex items-center gap-2 mb-3">
                 <Info className="w-4 h-4 text-blue-400" />
                 <p className="text-xs font-semibold text-slate-400">Selected Node</p>
@@ -191,8 +205,28 @@ export default function GraphPage() {
             </div>
           )}
 
+          {/* Recurring patterns across documents */}
+          {patterns.length > 0 && (
+            <div className="glass-card rounded-2xl p-4 flex-shrink-0">
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <p className="text-xs font-semibold text-slate-400">Recurring Patterns</p>
+              </div>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {patterns.map((p, i) => (
+                  <div key={i} className="px-2.5 py-2 rounded-lg" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)" }}>
+                    <p className="text-xs font-medium text-slate-300 truncate">{p.name}</p>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      {p.type} · mentioned in {p.doc_count} documents
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Stats */}
-          <div className="glass-card rounded-2xl p-4">
+          <div className="glass-card rounded-2xl p-4 flex-shrink-0">
             <p className="text-xs font-semibold text-slate-400 mb-2">Graph Stats</p>
             <p className="text-2xl font-bold text-blue-400">{rfNodes.length}</p>
             <p className="text-xs text-slate-600">Nodes</p>

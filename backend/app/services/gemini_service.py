@@ -21,6 +21,140 @@ def format_chunks_as_context(chunks: List[Dict[str, Any]]) -> str:
     return context_str
 
 
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+
+# Common English function words excluded from relevance scoring — otherwise
+# every query would trivially "overlap" with every sentence via words like
+# "is"/"the"/"what", making the not-found check nearly unreachable.
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "what", "when", "where", "who", "whom", "which", "why", "how",
+    "do", "does", "did", "doing", "i", "me", "my", "we", "our", "you", "your",
+    "he", "him", "his", "she", "her", "it", "its", "they", "them", "their",
+    "and", "or", "but", "if", "of", "at", "by", "for", "with", "about",
+    "against", "between", "into", "through", "during", "to", "from", "in",
+    "on", "off", "over", "under", "again", "further", "then", "once", "this",
+    "that", "these", "those", "am", "have", "has", "had", "having", "can",
+    "will", "would", "should", "could", "shall", "may", "might", "must", "not",
+    "no", "nor", "so", "than", "too", "very", "just", "s", "t",
+}
+
+
+def not_found_message(query: str) -> str:
+    """Standard, consistent 'nothing relevant retrieved' response used everywhere."""
+    return f'I could not find information about "{query}" in the uploaded documents.'
+
+
+_PREFIX_LEN = 6
+
+
+def _content_words(text: str) -> set:
+    """
+    Extracts lowercased content words (stopwords removed), truncated to a fixed
+    prefix length. This lightweight stemming lets simple word-form variations
+    still match for scoring purposes — e.g. "project"/"projects", or
+    "internship"/"intern" — without needing a real NLP stemmer library.
+    """
+    words = (w.lower() for w in _WORD_RE.findall(text))
+    return {(w[:_PREFIX_LEN] if len(w) > _PREFIX_LEN else w) for w in words if w not in _STOPWORDS}
+
+
+_LINE_SPLIT_RE = re.compile(r"[\r\n]+")
+_BULLET_RE = re.compile(r"^[•\-\*•●◦⁃]\s*")
+_MAX_SNIPPET_LEN = 220
+
+
+def _candidate_spans(content: str):
+    """
+    Splits chunk text into short candidate spans for scoring — first by line
+    (so bulleted résumé/ticket-style text doesn't collapse into one giant
+    run-on "sentence"), then by sentence punctuation within each line.
+    """
+    for line in _LINE_SPLIT_RE.split(content):
+        line = _BULLET_RE.sub("", line.strip())
+        if not line:
+            continue
+        for sentence in _SENTENCE_SPLIT_RE.split(line):
+            sentence = sentence.strip()
+            if len(sentence) >= 3:
+                yield sentence
+
+
+def extractive_answer(query: str, chunks: List[Dict[str, Any]], max_sentences: int = 6) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Builds a concise, non-fabricated answer by picking the most query-relevant
+    spans directly out of retrieved chunks — used whenever Gemini reasoning
+    is unavailable. This is a summary, not a raw dump of chunk text, and it
+    never falls back to hardcoded/demo content.
+
+    Returns a "not found" message (rather than a summary of unrelated content)
+    if none of the retrieved chunks actually relate to the query.
+    """
+    if not chunks:
+        return not_found_message(query), []
+
+    query_words = _content_words(query)
+    candidates = []  # (score, sentence, filename, chunk_index)
+    for chunk in chunks:
+        meta = chunk.get("metadata", {})
+        filename = meta.get("filename", "Unknown Document")
+        chunk_idx = meta.get("chunk_index")
+        content = chunk.get("page_content") or ""
+        for sentence in _candidate_spans(content):
+            sentence_words = _content_words(sentence)
+            score = len(query_words & sentence_words)
+            candidates.append((score, sentence, filename, chunk_idx))
+
+    if not candidates or not query_words or max(c[0] for c in candidates) == 0:
+        # Nothing in the retrieved chunks actually relates to the query —
+        # never summarize unrelated content as if it were an answer.
+        return not_found_message(query), []
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    top = [
+        (score, sentence[:_MAX_SNIPPET_LEN] + ("…" if len(sentence) > _MAX_SNIPPET_LEN else ""), filename, chunk_idx)
+        for score, sentence, filename, chunk_idx in candidates[:max_sentences]
+    ]
+
+    summary = " ".join(sentence for _, sentence, _, _ in top)
+
+    citations = []
+    seen = set()
+    for _, sentence, filename, chunk_idx in top:
+        if filename in seen:
+            continue
+        seen.add(filename)
+        citations.append({"document_name": filename, "page_number": chunk_idx, "text": sentence[:200]})
+
+    return summary, citations
+
+
+def _fallback_answer(
+    query: str,
+    vector_chunks: List[Dict[str, Any]],
+    graph_triples: List[Dict[str, Any]]
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Non-fabricated fallback used whenever Gemini is unavailable (no key,
+    call failure, or rate limit). Tries the retrieved document chunks first;
+    if those aren't relevant but the knowledge graph found relevant entities
+    (e.g. a "what organizations are mentioned" category match from
+    app.agents.planner_agent), summarizes those instead of declaring
+    "not found" — retrieval succeeded even though the text-overlap heuristic
+    alone wouldn't have caught it.
+    """
+    summary, citations = extractive_answer(query, vector_chunks)
+    if citations:
+        return summary, citations
+
+    if graph_triples:
+        lines = [f"- {t['source']} → {t['label']} → {t['target']}" for t in graph_triples[:15]]
+        return "Based on the knowledge graph extracted from your documents:\n" + "\n".join(lines), []
+
+    return not_found_message(query), []
+
+
 class GeminiService:
     def __init__(self):
         self.api_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
@@ -53,11 +187,11 @@ class GeminiService:
         """
         if not vector_chunks and not graph_triples:
             logger.info("No context retrieved from FAISS/graph for query: %r", query)
-            return "No relevant information was found in the uploaded documents.", []
+            return not_found_message(query), []
 
         if not self.active:
-            logger.info("Gemini service offline (no API key). Building grounded fallback from retrieved chunks.")
-            return self._build_grounded_fallback(vector_chunks)
+            logger.info("Gemini service offline (no API key). Building extractive summary from retrieved chunks/graph.")
+            return _fallback_answer(query, vector_chunks, graph_triples)
 
         # Format Vector context
         context_str = format_chunks_as_context(vector_chunks)
@@ -68,9 +202,11 @@ class GeminiService:
             graph_str += f"Relation: ({edge.get('source')}) -[{edge.get('label')}]-> ({edge.get('target')})\n"
 
         system_prompt = f"""
-You are an AI knowledge assistant. You answer questions using ONLY the context retrieved
-from the user's own uploaded documents (and, if present, their knowledge graph). You have
-no other source of information — never use outside or general knowledge to fill in gaps.
+You are a senior expert analyst engaged to brief a decision-maker (e.g. a business or plant
+owner) on exactly what they asked about. You answer using ONLY the context retrieved from
+the user's own uploaded documents (and, if present, their knowledge graph). You have no
+other source of information — never use outside or general knowledge to fill in gaps, and
+never invent a figure, date, name, or fact that is not present in the context below.
 
 Context Datasets:
 1. RETRIEVED DOCUMENT EXCERPTS:
@@ -80,10 +216,21 @@ Context Datasets:
 {graph_str if graph_str else "(none retrieved)"}
 
 CRITICAL RULES:
-1. Answer the user's question clearly and directly using only the context above.
-2. Every fact or specification you state MUST be cited directly from the RETRIEVED DOCUMENT EXCERPTS.
-3. Use inline brackets for citations, referencing the exact Source ID (e.g., `[Resume.pdf, Page 1]` or `[Contract.docx, Sheet: Logs]`).
-4. If the context does not contain the answer, say exactly: "I could not find this information in the uploaded documents." Do not make up facts, and never invent details not present in the context.
+1. If the context above contains relevant material, give a complete, well-organized briefing —
+   the way a senior consultant who is paid well for exactly this expertise would: surface every
+   relevant figure, name, date, and detail found in the context, not just the single most
+   obviously-matching sentence. Use short paragraphs or bullet points to organize a
+   multi-part answer; do not compress a rich answer down to one terse line when the context
+   supports more.
+2. Every fact or figure you state MUST be cited directly from the RETRIEVED DOCUMENT EXCERPTS —
+   thoroughness never means going beyond what the context actually supports.
+3. Use inline brackets for citations, referencing the exact Source ID (e.g., `[Resume.pdf, Page 1]`
+   or `[Contract.docx, Sheet: Logs]`), placed next to each specific fact they support.
+4. If the context is only partially relevant (e.g. it answers part of a multi-part question),
+   answer the part(s) it supports and explicitly say which part(s) are not covered by the
+   uploaded documents — do not silently drop them or refuse the whole question.
+5. If the context does not contain the answer at all, say exactly: {not_found_message(query)}
+   Do not make up facts, and never invent details not present in the context.
 """
 
         try:
@@ -99,8 +246,8 @@ CRITICAL RULES:
             logger.info("Gemini answered query using %d retrieved chunk(s), %d citation(s) parsed.", len(vector_chunks), len(citations))
             return answer, citations
         except Exception as e:
-            logger.error(f"Gemini query failed: {e}. Falling back to grounded chunk-based answer.")
-            return self._build_grounded_fallback(vector_chunks)
+            logger.error(f"Gemini query failed: {e}. Falling back to extractive summary.")
+            return _fallback_answer(query, vector_chunks, graph_triples)
 
     def _parse_citations(self, text: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -143,35 +290,6 @@ CRITICAL RULES:
                     "text": matching_chunk["page_content"][:200] + "..."  # Short summary snippet
                 })
         return citations
-
-    def _build_grounded_fallback(self, vector_chunks: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
-        """
-        Builds a non-fabricated answer directly from retrieved FAISS chunks when
-        Gemini reasoning is unavailable (no API key configured, or the API call failed).
-        Never references demo/sample data — only the actual retrieved document excerpts.
-        """
-        if not vector_chunks:
-            return "No relevant information was found in the uploaded documents.", []
-
-        lines = ["_AI reasoning is currently unavailable — showing the most relevant excerpts found in your uploaded documents:_"]
-        citations = []
-        seen_filenames = set()
-        for chunk in vector_chunks[:3]:
-            meta = chunk.get("metadata", {})
-            filename = meta.get("filename", "Unknown Document")
-            chunk_idx = meta.get("chunk_index")
-            content = (chunk.get("page_content") or "").strip()
-            if not content:
-                continue
-            lines.append(f"\n**[{filename}]**\n{content[:1500]}")
-            if filename not in seen_filenames:
-                seen_filenames.add(filename)
-                citations.append({
-                    "document_name": filename,
-                    "page_number": chunk_idx,
-                    "text": content[:200] + ("..." if len(content) > 200 else "")
-                })
-        return "\n".join(lines), citations
 
 
 gemini_service = GeminiService()

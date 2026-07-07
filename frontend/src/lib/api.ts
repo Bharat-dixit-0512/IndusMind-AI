@@ -39,7 +39,7 @@ export async function registerApi(payload: RegisterPayload): Promise<AuthToken> 
 export interface DocumentRecord {
   id: string; filename: string; file_type: string; file_size: number;
   status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
-  error_message?: string; uploaded_by: string; created_at: string;
+  error_message?: string; category?: string | null; uploaded_by: string; created_at: string;
 }
 
 export async function uploadDocument(file: File): Promise<DocumentRecord> {
@@ -108,6 +108,14 @@ export async function fetchGraph(): Promise<GraphData> {
   return handleResponse<GraphData>(res);
 }
 
+export interface RecurringPattern { type: string; name: string; documents: string[]; doc_count: number; }
+
+export async function fetchRecurringPatterns(): Promise<RecurringPattern[]> {
+  const res = await fetch(`${API_BASE}/graph/patterns`, { headers: getHeaders() });
+  const data = await handleResponse<{ patterns: RecurringPattern[] }>(res);
+  return data.patterns;
+}
+
 // ─── Reports ───────────────────────────────────────────────────────────────
 export interface ReportRecord {
   id: string; title: string; report_type: string;
@@ -134,4 +142,63 @@ export async function runComplianceCheck(query: string): Promise<unknown> {
     method: "POST", headers: getHeaders(),
   });
   return handleResponse<unknown>(res);
+}
+
+export interface ComplianceChecklistItem {
+  parameter: string; sop_limit: string; inspected_value: string;
+  status: "COMPLIANT" | "NON_COMPLIANT"; deviation: string;
+}
+export interface ComplianceOverview {
+  has_data: boolean;
+  message: string;
+  compliance_score: number;
+  risk_level: string;
+  summary: string;
+  passed_checks: number;
+  failed_checks: number;
+  checklist: ComplianceChecklistItem[];
+  corrective_actions: string[];
+  deviations: ComplianceChecklistItem[];
+  detected_documents: { id: string; filename: string; category: string }[];
+  category_counts: Record<string, number>;
+  missing_documents: string[];
+  citations: Citation[];
+  confidence_score: number;
+  generated_at: string;
+}
+export async function fetchComplianceOverview(): Promise<ComplianceOverview> {
+  const res = await fetch(`${API_BASE}/compliance/overview`, { headers: getHeaders() });
+  return handleResponse<ComplianceOverview>(res);
+}
+
+// ─── Maintenance ───────────────────────────────────────────────────────────
+export interface MaintenanceAsset { id: string; type: string; name: string; doc_count: number; }
+export interface MaintenanceDoc { id: string; filename: string; category: string | null; status: string; created_at: string | null; }
+export interface MaintenanceOverview {
+  has_data: boolean;
+  message: string;
+  assets: MaintenanceAsset[];
+  asset_counts: Record<string, number>;
+  documents: MaintenanceDoc[];
+  recent_incidents: MaintenanceDoc[];
+  recurring_patterns: RecurringPattern[];
+}
+export async function fetchMaintenanceOverview(): Promise<MaintenanceOverview> {
+  const res = await fetch(`${API_BASE}/maintenance/overview`, { headers: getHeaders() });
+  return handleResponse<MaintenanceOverview>(res);
+}
+
+export interface AssetDetail {
+  asset: string;
+  report: {
+    equipment_id: string; failure_mode: string; root_cause: string;
+    chronology: string[]; timeline?: TimelineEvent[];
+    maintenance_actions_taken: string[]; preventive_recommendations: string[];
+    lessons_learned: string[]; confidence_score: number;
+  };
+  citations: Citation[];
+}
+export async function fetchAssetDetail(assetName: string): Promise<AssetDetail> {
+  const res = await fetch(`${API_BASE}/maintenance/asset/${encodeURIComponent(assetName)}`, { headers: getHeaders() });
+  return handleResponse<AssetDetail>(res);
 }

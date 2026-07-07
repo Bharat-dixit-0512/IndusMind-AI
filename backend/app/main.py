@@ -2,10 +2,12 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import auth, documents, chat, graph, compliance, reports
+from app.api import auth, documents, chat, graph, compliance, reports, maintenance
 from app.db.session import SessionLocal
 from app.db.init_db import init_db
+from app.models.document import Document
 from app.services.graph_db import graph_db
+from app.services.vector_store import vector_store
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +38,7 @@ app.include_router(documents.router, prefix=f"{settings.API_V1_STR}/documents", 
 app.include_router(chat.router, prefix=f"{settings.API_V1_STR}/chat", tags=["AI Chat"])
 app.include_router(graph.router, prefix=f"{settings.API_V1_STR}/graph", tags=["Knowledge Graph"])
 app.include_router(compliance.router, prefix=f"{settings.API_V1_STR}/compliance", tags=["Compliance Agent"])
+app.include_router(maintenance.router, prefix=f"{settings.API_V1_STR}/maintenance", tags=["Maintenance Intelligence"])
 app.include_router(reports.router, prefix=f"{settings.API_V1_STR}/reports", tags=["Reports"])
 
 
@@ -53,7 +56,20 @@ def on_startup():
     except Exception as e:
         logger.error(f"Failed to initialize relational database on startup: {e}")
 
-    # 2. Verify graph database connectivity (no demo data is seeded automatically —
+    # 2. Reconcile the vector index against the database so it only ever contains
+    #    chunks for documents that actually still exist — this self-heals away any
+    #    demo/test/orphaned data left over from before this document was deleted,
+    #    or from earlier development runs.
+    try:
+        db = SessionLocal()
+        valid_ids = {str(doc_id) for (doc_id,) in db.query(Document.id).all()}
+        db.close()
+        vector_store.reconcile_with_documents(valid_ids)
+        logger.info(f"Vector index reconciled against {len(valid_ids)} existing document(s).")
+    except Exception as e:
+        logger.error(f"Failed to reconcile vector index with database: {e}")
+
+    # 3. Verify graph database connectivity (no demo data is seeded automatically —
     #    the graph only reflects entities extracted from documents you actually
     #    upload. Use POST /api/v1/graph/reseed to explicitly load the optional
     #    Centurion Plant sample dataset for demo purposes.)
@@ -65,6 +81,19 @@ def on_startup():
             logger.info("Graph DB is in mock mode (in-memory, empty until documents are uploaded).")
     except Exception as e:
         logger.error(f"Failed to verify graph database connectivity: {e}")
+
+    # 4. Reconcile the knowledge graph against the database, same as the
+    #    vector index above — self-heals away any entities/relationships left
+    #    over from documents deleted before this document-lifecycle model
+    #    existed, or deleted while Neo4j was unreachable, so the graph always
+    #    represents only currently-uploaded documents.
+    try:
+        db = SessionLocal()
+        valid_ids = {str(doc_id) for (doc_id,) in db.query(Document.id).all()}
+        db.close()
+        graph_db.reconcile_with_documents(valid_ids)
+    except Exception as e:
+        logger.error(f"Failed to reconcile graph database with documents: {e}")
 
 
 @app.get("/")

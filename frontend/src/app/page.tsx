@@ -63,7 +63,7 @@ export default function HomePage() {
             </span>
           </h1>
           <p className="text-lg text-slate-400 mb-12 max-w-md">
-            Unified Asset & Operations Intelligence for the <span className="text-blue-400 font-medium">Centurion Petrochemical Plant</span>. 
+            Unified <span className="text-blue-400 font-medium">Document Intelligence</span> for your organization.
             Upload documents, visualize knowledge, and query with citations.
           </p>
 
@@ -129,7 +129,7 @@ export default function HomePage() {
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1.5">Email Address</label>
                 <input type="email" value={form.email} onChange={e => set("email", e.target.value)} required
-                  placeholder="engineer@centurion.plant"
+                  placeholder="you@company.com"
                   className="w-full px-4 py-2.5 rounded-lg text-sm text-slate-200 outline-none transition-all"
                   style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.07)" }}
                   onFocus={e => (e.target.style.borderColor = "rgba(59,130,246,0.5)")}

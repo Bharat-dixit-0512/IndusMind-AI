@@ -9,18 +9,12 @@ const REPORT_TYPES = [
   { value: "COMPLIANCE",  label: "Compliance Audit",       color: "#6366f1" },
   { value: "MAINTENANCE", label: "Maintenance Report",     color: "#10b981" },
   { value: "INSPECTION",  label: "Inspection Summary",     color: "#f59e0b" },
+  { value: "EXECUTIVE",   label: "Executive Summary",      color: "#8b5cf6" },
 ];
 
 const TYPE_COLORS: Record<string, string> = {
-  RCA: "#ef4444", COMPLIANCE: "#6366f1", MAINTENANCE: "#10b981", INSPECTION: "#f59e0b",
+  RCA: "#ef4444", COMPLIANCE: "#6366f1", MAINTENANCE: "#10b981", INSPECTION: "#f59e0b", EXECUTIVE: "#8b5cf6",
 };
-
-const MOCK_REPORTS: ReportRecord[] = [
-  { id: "1", title: "RCA – Pump P-102 Shaft Failure",        report_type: "RCA",         file_path: "/reports/1.pdf", generated_by: "", created_at: "2026-05-14T11:00:00Z" },
-  { id: "2", title: "Compliance Audit – SOP-MECH-022",       report_type: "COMPLIANCE",  file_path: "/reports/2.pdf", generated_by: "", created_at: "2026-06-01T09:30:00Z" },
-  { id: "3", title: "Monthly Maintenance Summary – May 2026", report_type: "MAINTENANCE", file_path: "/reports/3.pdf", generated_by: "", created_at: "2026-06-01T10:00:00Z" },
-  { id: "4", title: "Compressor C-301 Inspection Report",    report_type: "INSPECTION",  file_path: "/reports/4.pdf", generated_by: "", created_at: "2026-06-28T15:00:00Z" },
-];
 
 export default function ReportsPage() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
@@ -29,33 +23,28 @@ export default function ReportsPage() {
   const [newTitle, setNewTitle] = useState("");
   const [newType, setNewType] = useState("RCA");
   const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     listReports()
-      .then(data => setReports(data.length > 0 ? data : MOCK_REPORTS))
-      .catch(() => setReports(MOCK_REPORTS))
+      .then(setReports)
+      .catch(e => setError(e instanceof Error ? e.message : "Failed to load reports"))
       .finally(() => setLoading(false));
   }, []);
 
   const handleGenerate = async () => {
     if (!newTitle.trim()) return;
     setGenerating(true);
+    setError("");
     try {
       const report = await generateReport(newTitle, newType);
       setReports(r => [report, ...r]);
-    } catch {
-      setReports(r => [{
-        id: Date.now().toString(),
-        title: newTitle,
-        report_type: newType,
-        file_path: "",
-        generated_by: "",
-        created_at: new Date().toISOString()
-      }, ...r]);
-    } finally {
-      setGenerating(false);
       setShowModal(false);
       setNewTitle("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate report");
+    } finally {
+      setGenerating(false);
     }
   };
 
@@ -65,7 +54,7 @@ export default function ReportsPage() {
   }));
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       <div className="flex items-start justify-between mb-6">
         <div>
           <div className="flex items-center gap-3 mb-1">
@@ -84,7 +73,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Summary tiles */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
         {counts.map(c => (
           <div key={c.value} className="glass-card rounded-xl p-4">
             <p className="text-2xl font-bold mb-1" style={{ color: c.color }}>{c.count}</p>
@@ -93,6 +82,12 @@ export default function ReportsPage() {
         ))}
       </div>
 
+      {error && (
+        <div className="mb-4 px-4 py-3 rounded-xl text-sm text-red-400" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)" }}>
+          {error}
+        </div>
+      )}
+
       {/* Report list */}
       <div className="glass-card rounded-2xl overflow-hidden">
         <div className="px-5 py-4" style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
@@ -100,6 +95,12 @@ export default function ReportsPage() {
         </div>
         {loading ? (
           <div className="p-6 space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-14 rounded-xl animate-pulse" style={{ background: "rgba(255,255,255,0.03)" }} />)}</div>
+        ) : reports.length === 0 ? (
+          <div className="p-10 text-center">
+            <FileText className="w-8 h-8 mx-auto mb-3 text-slate-700" />
+            <p className="text-sm text-slate-500">No reports generated yet.</p>
+            <p className="text-xs text-slate-600 mt-1">Click &ldquo;Generate Report&rdquo; to compile one from your uploaded documents.</p>
+          </div>
         ) : (
           <div className="divide-y" style={{ borderColor: "rgba(255,255,255,0.04)" }}>
             {reports.map(r => {
@@ -147,7 +148,7 @@ export default function ReportsPage() {
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1.5">Report Title</label>
                 <input value={newTitle} onChange={e => setNewTitle(e.target.value)}
-                  placeholder="e.g. RCA – Pump P-102 Seal Failure"
+                  placeholder="e.g. RCA - Shaft Seal Failure"
                   className="w-full px-4 py-2.5 rounded-xl text-sm text-slate-200 placeholder:text-slate-600 outline-none"
                   style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)" }} />
               </div>

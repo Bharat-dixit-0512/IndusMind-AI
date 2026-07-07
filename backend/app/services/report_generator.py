@@ -84,12 +84,27 @@ def generate_pdf_report(
     )
 
     story = []
-    
+
     # 3. Header/Title
+    generated_at = data.get("generated_at") or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     story.append(Paragraph(title, title_style))
-    story.append(Paragraph(f"<b>Report Type:</b> {report_type.upper()} | <b>Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", body_style))
+    meta_line = f"<b>Report Type:</b> {report_type.upper()} | <b>Generated:</b> {generated_at}"
+    if data.get("generated_by"):
+        meta_line += f" | <b>By:</b> {data['generated_by']}"
+    story.append(Paragraph(meta_line, body_style))
+
+    # Confidence badge — present on every report so readers can weigh it.
+    confidence = data.get("confidence_score")
+    if confidence is not None:
+        pct = int(round(float(confidence) * 100))
+        conf_color = "#16a34a" if pct >= 75 else ("#ca8a04" if pct >= 50 else "#dc2626")
+        story.append(Paragraph(
+            f"<b>AI Confidence:</b> <font color='{conf_color}'>{pct}%</font> "
+            f"| <b>Sources cited:</b> {data.get('source_count', len(data.get('citations', []) or []))}",
+            body_style
+        ))
     story.append(Spacer(1, 15))
-    
+
     # 4. Content flow mapping based on report type
     if report_type.upper() == "COMPLIANCE":
         story.append(Paragraph("Audit Summary", h2_style))
@@ -177,12 +192,71 @@ def generate_pdf_report(
             story.append(Paragraph("Lessons Learned", h2_style))
             for lesson in lessons:
                 story.append(Paragraph(f"• <i>{lesson}</i>", bullet_style))
-                
-    else: # GENERAL INSPECTION
-        story.append(Paragraph("Inspection Details", h2_style))
+
+    elif report_type.upper() in ("INSPECTION", "EXECUTIVE", "MAINTENANCE"):
+        # Narrative/summary reports built from a grounded knowledge answer.
+        heading = {
+            "INSPECTION": "Inspection Summary",
+            "EXECUTIVE": "Executive Summary",
+            "MAINTENANCE": "Maintenance Summary",
+        }[report_type.upper()]
+        story.append(Paragraph(heading, h2_style))
+        summary_text = data.get("response") or data.get("root_cause") or data.get("summary") \
+            or "No relevant information was found in the uploaded documents for this report."
+        story.append(Paragraph(summary_text, body_style))
+        story.append(Spacer(1, 10))
+
+        for section_key, section_title in [
+            ("preventive_recommendations", "Recommendations"),
+            ("maintenance_actions_taken", "Actions Taken"),
+            ("lessons_learned", "Key Takeaways"),
+        ]:
+            items = data.get(section_key, []) or []
+            if items:
+                story.append(Paragraph(section_title, h2_style))
+                for item in items:
+                    story.append(Paragraph(f"• {item}", bullet_style))
+                story.append(Spacer(1, 8))
+
+        evidence = data.get("evidence_base", []) or []
+        if evidence:
+            story.append(Paragraph("Evidence Base", h2_style))
+            for ev in evidence:
+                story.append(Paragraph(f"• {ev}", bullet_style))
+
+    else:  # Unknown/legacy type — render whatever fields exist, minus internals.
+        story.append(Paragraph("Details", h2_style))
+        _internal = {"citations", "graph_relationships", "confidence_score",
+                     "generated_at", "generated_by", "source_count", "reasoning_steps"}
         for key, value in data.items():
+            if key in _internal or isinstance(value, (list, dict)):
+                continue
             story.append(Paragraph(f"<b>{key.replace('_', ' ').title()}:</b> {value}", body_style))
-            
+
+    # 5. Knowledge-graph relationships used (shared across all report types)
+    graph_rels = data.get("graph_relationships", []) or []
+    if graph_rels:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("Knowledge Graph Relationships", h2_style))
+        for rel in graph_rels:
+            story.append(Paragraph(f"• {rel}", bullet_style))
+
+    # 6. Citations (shared across all report types)
+    citations = data.get("citations", []) or []
+    if citations:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("Sources & Citations", h2_style))
+        for c in citations:
+            name = c.get("document_name", "Unknown Document")
+            page = c.get("page_number")
+            loc = f" (chunk {page})" if page is not None else ""
+            story.append(Paragraph(f"• <b>{name}</b>{loc}", bullet_style))
+    else:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(
+            "<i>No source documents were cited for this report — the uploaded knowledge base "
+            "did not contain matching content.</i>", body_style))
+
     # Build Document
     try:
         doc.build(story)

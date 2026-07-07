@@ -1,34 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, Suspense } from "react";
+import { useEffect, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import {
-  sendChatMessage,
-  type ChatResponse,
-  type Citation,
-  type AgentLogStep,
-  type TimelineEvent,
-} from "@/lib/api";
+import type { Citation, AgentLogStep } from "@/lib/api";
+import { useChat, type Message } from "@/context/ChatContext";
 import {
   Send, Bot, User, FileText, ChevronDown, ChevronUp, Loader2,
   Sparkles, Mic, Brain, CheckCircle2, Clock, ChevronRight,
-  Shield, X, AlertCircle, BarChart3,
+  Shield, X, AlertCircle, BarChart3, Trash2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  citations?: Citation[];
-  agentLogs?: AgentLogStep[];
-  confidenceScore?: number;
-  reasoningSteps?: string[];
-  evidenceBase?: string[];
-  timeline?: TimelineEvent[];
-  loading?: boolean;
-}
 
 // ─── Citation Card ────────────────────────────────────────────────────────────
 function CitationCard({ c }: { c: Citation }) {
@@ -253,11 +234,11 @@ function ExplainabilityDrawer({
 
 // ─── Voice Mic Button ─────────────────────────────────────────────────────────
 const VOICE_QUERIES = [
-  "Why did Pump P-102 fail?",
-  "Show me the SOP for shaft alignment limits",
-  "Check compliance of the last inspection report",
-  "Generate RCA for Compressor C-301",
-  "What spare parts were used in work order WO-9844?",
+  "What documents have I uploaded?",
+  "Summarize my most recent document",
+  "What are the key skills mentioned in my documents?",
+  "What projects are described in my documents?",
+  "When are the important dates mentioned in my documents?",
 ];
 
 function VoiceMicButton({ onQuery, disabled }: { onQuery: (q: string) => void; disabled: boolean }) {
@@ -318,25 +299,18 @@ function VoiceMicButton({ onQuery, disabled }: { onQuery: (q: string) => void; d
 
 // ─── Suggestions ──────────────────────────────────────────────────────────────
 const SUGGESTIONS = [
-  "Why did Pump P-102 fail?",
-  "Show maintenance history for Train 2",
-  "Generate RCA for Compressor C-301",
-  "Check compliance of Pump P-102 inspection",
-  "What is the shaft alignment SOP limit?",
+  "What documents have I uploaded?",
+  "Summarize my most recent document",
+  "What skills or technologies are mentioned?",
+  "What projects are described in my documents?",
+  "What organizations or companies are mentioned?",
 ];
 
 // ─── Inner Chat (needs Suspense for useSearchParams) ────────────────────────
 function ChatInner() {
   const searchParams = useSearchParams();
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "0",
-      role: "assistant",
-      content: "Hello! I am the **Industrial AI Brain** for the Centurion Petrochemical Plant — Train 2.\n\nI can answer engineering and maintenance questions using the uploaded manuals, inspection reports, SOPs, and maintenance logs — with full source citations.\n\nTry asking: *\"Why did Pump P-102 fail?\"*",
-    }
-  ]);
+  const { messages, isLoading, sendMessage, clearChat } = useChat();
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [explainMsg, setExplainMsg] = useState<Message | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -350,45 +324,21 @@ function ChatInner() {
     if (q) setInput(q);
   }, [searchParams]);
 
-  const sendMessage = useCallback(async (text: string) => {
+  const handleSend = (text: string) => {
     if (!text.trim() || isLoading) return;
-    const userMsg: Message = { id: Date.now().toString(), role: "user", content: text };
-    const placeholderId = (Date.now() + 1).toString();
-    const placeholder: Message = { id: placeholderId, role: "assistant", content: "", loading: true };
-    setMessages(m => [...m, userMsg, placeholder]);
+    sendMessage(text);
     setInput("");
-    setIsLoading(true);
-
-    try {
-      const data: ChatResponse = await sendChatMessage(text);
-      setMessages(m => m.map(msg =>
-        msg.id === placeholderId
-          ? {
-              id: placeholderId,
-              role: "assistant",
-              content: data.response,
-              citations: data.citations,
-              agentLogs: data.agent_logs,
-              confidenceScore: data.confidence_score,
-              reasoningSteps: data.reasoning_steps,
-              evidenceBase: data.evidence_base,
-              timeline: data.timeline,
-            }
-          : msg
-      ));
-    } catch {
-      setMessages(m => m.map(msg =>
-        msg.id === placeholderId
-          ? { ...msg, content: "⚠️ Could not reach the backend. Please ensure the FastAPI server is running.", loading: false }
-          : msg
-      ));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [isLoading]);
+  };
 
   const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(input); }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(input); }
+  };
+
+  const handleClearChat = () => {
+    if (window.confirm("Clear the current conversation? This cannot be undone.")) {
+      clearChat();
+      setExplainMsg(null);
+    }
   };
 
   return (
@@ -403,20 +353,32 @@ function ChatInner() {
 
       <div className="flex flex-col h-screen">
         {/* Header */}
-        <div className="px-8 py-5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "linear-gradient(135deg, #3b82f6, #1d4ed8)" }}>
-              <Sparkles className="w-4 h-4 text-white" />
+        <div className="px-4 md:px-8 py-5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #3b82f6, #1d4ed8)" }}>
+                <Sparkles className="w-4 h-4 text-white" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-lg font-bold text-slate-100">AI Knowledge Chat</h1>
+                <p className="text-xs text-slate-500 truncate">Powered by Gemini 2.5 Flash · Multi-Agent RAG + Knowledge Graph</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-lg font-bold text-slate-100">AI Knowledge Chat</h1>
-              <p className="text-xs text-slate-500">Powered by Gemini 2.5 Flash · Multi-Agent RAG + Graph · Centurion Plant KB</p>
-            </div>
+            {messages.length > 1 && (
+              <button
+                onClick={handleClearChat}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-red-400 transition-all duration-200 flex-shrink-0"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Clear Chat</span>
+              </button>
+            )}
           </div>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6">
+        <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6">
           {messages.map(msg => (
             <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
               {/* Avatar */}
@@ -489,9 +451,9 @@ function ChatInner() {
 
         {/* Suggestions (only on first message) */}
         {messages.length === 1 && (
-          <div className="px-8 pb-4 flex flex-wrap gap-2">
+          <div className="px-4 md:px-8 pb-4 flex flex-wrap gap-2">
             {SUGGESTIONS.map(s => (
-              <button key={s} onClick={() => sendMessage(s)}
+              <button key={s} onClick={() => handleSend(s)}
                 className="px-3 py-1.5 rounded-full text-xs text-slate-400 hover:text-slate-200 transition-all duration-200"
                 style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
                 {s}
@@ -501,7 +463,7 @@ function ChatInner() {
         )}
 
         {/* Input area */}
-        <div className="px-8 pb-6 flex-shrink-0">
+        <div className="px-4 md:px-8 pb-6 flex-shrink-0">
           <div className="flex items-end gap-3 p-3 rounded-2xl" style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.07)" }}>
             <textarea
               value={input}
@@ -516,7 +478,7 @@ function ChatInner() {
             <VoiceMicButton onQuery={(q) => { setInput(q); }} disabled={isLoading} />
             {/* Send */}
             <button
-              onClick={() => sendMessage(input)}
+              onClick={() => handleSend(input)}
               disabled={!input.trim() || isLoading}
               className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 disabled:opacity-40"
               style={{ background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", boxShadow: "0 4px 12px rgba(59,130,246,0.3)" }}

@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, List
 import google.generativeai as genai
 import json
-from app.services.gemini_service import gemini_service, format_chunks_as_context
+from app.services.gemini_service import gemini_service, format_chunks_as_context, extractive_answer, not_found_message
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +22,17 @@ class MaintenanceAgent:
 
         if not context_chunks:
             logger.info("MaintenanceAgent: no context chunks retrieved, returning not-found report.")
-            return self._not_found_rca()
+            return self._not_found_rca(query)
 
         context_str = format_chunks_as_context(context_chunks)
 
         prompt = f"""
-You are a reliability engineer building a formal Root Cause Analysis (RCA) report for a failure
-described in the context below. Use ONLY the context — never introduce equipment, dates, or facts
-that are not present in it.
+You are a senior reliability engineer building a formal Root Cause Analysis (RCA) report for a
+failure described in the context below, for an owner who needs the complete picture in one
+briefing. Use ONLY the context — never introduce equipment, dates, or facts that are not
+present in it — but be exhaustive: pull in every relevant detail the context actually
+contains (all timeline events, all actions taken, all recommendations), not just the first
+one you find.
 
 Retrieved Document Context:
 ---
@@ -73,8 +76,8 @@ Do not wrap in markdown or add explanations outside the JSON block.
 
         try:
             if not self.active:
-                logger.info("MaintenanceAgent: Gemini unavailable, building grounded fallback RCA.")
-                return self._grounded_fallback_rca(context_chunks)
+                logger.info("MaintenanceAgent: Gemini unavailable, building extractive summary RCA.")
+                return self._extractive_rca(query, context_chunks)
 
             model = genai.GenerativeModel("gemini-2.5-flash")
             response = model.generate_content(
@@ -83,16 +86,17 @@ Do not wrap in markdown or add explanations outside the JSON block.
             )
             return json.loads(response.text.strip())
         except Exception as e:
-            logger.error(f"MaintenanceAgent RCA generation failed: {e}. Falling back to grounded chunk-based RCA.")
-            return self._grounded_fallback_rca(context_chunks)
+            logger.error(f"MaintenanceAgent RCA generation failed: {e}. Falling back to extractive summary.")
+            return self._extractive_rca(query, context_chunks)
 
-    def _not_found_rca(self) -> Dict[str, Any]:
+    def _not_found_rca(self, query: str) -> Dict[str, Any]:
+        message = not_found_message(query)
         return {
             "equipment_id": "",
-            "failure_mode": "No relevant information was found in the uploaded documents.",
+            "failure_mode": message,
             "chronology": [],
             "timeline": [],
-            "root_cause": "No relevant information was found in the uploaded documents.",
+            "root_cause": message,
             "maintenance_actions_taken": [],
             "preventive_recommendations": [],
             "lessons_learned": [],
@@ -101,31 +105,30 @@ Do not wrap in markdown or add explanations outside the JSON block.
             "evidence_base": []
         }
 
-    def _grounded_fallback_rca(self, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _extractive_rca(self, query: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Non-fabricated fallback used when Gemini is unavailable but relevant chunks
-        were retrieved — surfaces the raw excerpts instead of a hardcoded demo RCA.
+        Non-fabricated fallback used when Gemini is unavailable — builds a concise
+        extractive summary from the retrieved chunks (never a raw excerpt dump,
+        and never hardcoded/demo content).
         """
-        filenames = sorted({c.get("metadata", {}).get("filename", "Unknown Document") for c in context_chunks})
-        excerpt = "\n\n".join(
-            f"[{c.get('metadata', {}).get('filename', 'Unknown Document')}] {(c.get('page_content') or '').strip()[:1500]}"
-            for c in context_chunks[:3]
-        )
+        summary, citations = extractive_answer(query, context_chunks)
+        if not citations:
+            return self._not_found_rca(query)
         return {
             "equipment_id": "",
-            "failure_mode": "AI reasoning unavailable — see retrieved excerpts below.",
+            "failure_mode": "AI reasoning unavailable — see summary below.",
             "chronology": [],
             "timeline": [],
-            "root_cause": f"AI reasoning is currently unavailable. Showing relevant excerpts retrieved from your uploaded documents instead:\n\n{excerpt}",
+            "root_cause": f"AI reasoning is currently unavailable. Summary from your uploaded documents: {summary}",
             "maintenance_actions_taken": [],
             "preventive_recommendations": [],
             "lessons_learned": [],
             "confidence_score": 0.3,
             "reasoning_steps": [
                 "Retrieved matching content from uploaded documents.",
-                "Gemini reasoning unavailable — returning raw excerpts instead of a structured RCA."
+                "Gemini reasoning unavailable — returning an extractive summary instead of a structured RCA."
             ],
-            "evidence_base": filenames
+            "evidence_base": sorted({c["document_name"] for c in citations})
         }
 
 

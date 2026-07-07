@@ -15,6 +15,7 @@ class DocumentOut(DocumentBase):
     id: UUID
     status: DocumentStatus
     error_message: Optional[str] = None
+    category: Optional[str] = None
     uploaded_by: UUID
     created_at: datetime
 
