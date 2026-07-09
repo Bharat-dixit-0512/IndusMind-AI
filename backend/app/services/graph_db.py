@@ -133,10 +133,20 @@ class Neo4jGraphDB:
     # outright once the array is empty, so entities/relationships still used
     # by surviving documents are never touched.
 
-    def upsert_document(self, document_id: str, filename: str, user_id: str) -> str:
-        """Creates/updates the Document node representing one uploaded file. Returns its graph node id."""
+    def upsert_document(self, document_id: str, filename: str, user_id: str,
+                        file_type: str = None, upload_time: str = None) -> str:
+        """
+        Creates/updates the Document node representing one uploaded file, the
+        single source of truth every extracted entity hangs off of. Returns
+        its graph node id. Carries the document's own metadata (id, filename,
+        user, type, upload time) so the graph is self-describing.
+        """
         doc_node_id = f"DOCUMENT::{document_id}"
         properties = {"id": doc_node_id, "document_id": document_id, "filename": filename, "user_id": user_id}
+        if file_type is not None:
+            properties["file_type"] = file_type
+        if upload_time is not None:
+            properties["upload_time"] = upload_time
 
         if self.active:
             self.execute_write(
@@ -415,6 +425,22 @@ class Neo4jGraphDB:
                     """,
                     {"valid_ids": valid_ids}
                 )
+                # Final sweep: delete any remaining entity node that has NO
+                # document provenance at all (document_ids null or empty and
+                # not a legacy singular document_id). This is what removes
+                # ownerless demo/seed nodes and any pre-lifecycle orphans, so
+                # the graph strictly reflects only currently-uploaded
+                # documents. Document nodes are excluded (handled above by the
+                # valid-ids check).
+                self.execute_write(
+                    """
+                    MATCH (n)
+                    WHERE NOT n:Document
+                      AND size(coalesce(n.document_ids, [])) = 0
+                      AND n.document_id IS NULL
+                    DETACH DELETE n
+                    """
+                )
                 logger.info(f"Graph database reconciled against {len(valid_ids)} existing document(s).")
             except Exception as e:
                 logger.error(f"Failed to reconcile graph database with documents: {e}")
@@ -434,12 +460,18 @@ class Neo4jGraphDB:
 
         orphaned_ids = set()
         for n in self._mock_db["nodes"]:
+            if n["type"] == "Document":
+                continue  # Document nodes handled above by the valid-ids check
             data = n["data"]
             doc_ids = data.get("document_ids")
             if doc_ids is None and data.get("document_id") is not None:
                 doc_ids = [data["document_id"]]  # legacy single-document node
             if doc_ids is None:
-                continue  # no document provenance at all (e.g. ownerless demo/seed node) — leave alone
+                # No document provenance at all (ownerless demo/seed or
+                # pre-lifecycle orphan) — purge, so the graph reflects only
+                # currently-uploaded documents.
+                orphaned_ids.add(n["id"])
+                continue
             remaining = [d for d in doc_ids if d in valid_id_set]
             data["document_ids"] = remaining
             if not remaining:
@@ -506,17 +538,19 @@ class Neo4jGraphDB:
 
     def get_owned_graph(self, user_id: str) -> Dict[str, List[Any]]:
         """
-        Returns the subgraph owned by `user_id` (plus any ownerless
-        legacy/demo-seeded nodes) — the same ownership filter used by the
-        /graph endpoint and the planner agent, shared here so the Maintenance
-        and Compliance dashboards read from the exact same knowledge graph
-        rather than rebuilding their own. Never exposes another user's
-        entities.
+        Returns the subgraph owned by `user_id` — the shared ownership filter
+        used by the /graph endpoint, the planner agent, and the Maintenance/
+        Compliance/Reports dashboards, so they all read the exact same
+        knowledge graph. Only nodes whose `user_id` matches are returned:
+        ownerless nodes (which could only come from the removed demo-seed
+        feature or pre-lifecycle orphans) are never shown, so the graph
+        reflects strictly this user's uploaded documents. Never exposes
+        another user's entities.
         """
         graph_data = self.get_all_nodes_and_edges()
         owned_nodes = [
             n for n in graph_data.get("nodes", [])
-            if n.get("data", {}).get("user_id") in (None, user_id)
+            if n.get("data", {}).get("user_id") == user_id
         ]
         owned_ids = {n["id"] for n in owned_nodes}
         owned_edges = [
@@ -564,51 +598,6 @@ class Neo4jGraphDB:
         except Exception as e:
             logger.error(f"Error fetching entire graph details: {e}")
             return self._mock_db
-
-    def load_centurion_mock_graph(self):
-        """
-        Loads the OPTIONAL Centurion Plant Train 2 sample dataset (see
-        app.services.seed_data) into the graph. This is never called
-        automatically — it only runs when explicitly requested, e.g. via
-        `POST /api/v1/graph/reseed`, so the runtime never depends on demo data.
-        This ownerless demo layer intentionally has no `document_ids`, so it
-        is never touched by remove_document_entities/reconcile_with_documents.
-        """
-        from app.services.seed_data import CENTURION_MOCK_NODES, CENTURION_MOCK_EDGES
-        mock_nodes = CENTURION_MOCK_NODES
-        mock_edges = CENTURION_MOCK_EDGES
-
-        if not self.active:
-            self._mock_db = {"nodes": mock_nodes, "relationships": mock_edges}
-            logger.info("Mock database populated with enriched Centurion Plant Train 2 items (14 nodes, 21 edges).")
-            return
-
-        # Active Neo4j insertion
-        for node in mock_nodes:
-            lbl = _safe_identifier(node["type"], "Entity")
-            props = node["data"]
-            # Convert attributes dictionary into Cypher properties format
-            cypher = f"MERGE (n:{lbl} {{id: $id}}) SET n += $properties"
-            self.execute_write(cypher, {"id": props["id"], "properties": props})
-
-        for edge in mock_edges:
-            # We must map mock IDs to node IDs in Neo4j
-            source_props = next(n["data"] for n in mock_nodes if n["id"] == edge["source"])
-            target_props = next(n["data"] for n in mock_nodes if n["id"] == edge["target"])
-            source_lbl = _safe_identifier(next(n["type"] for n in mock_nodes if n["id"] == edge["source"]), "Entity")
-            target_lbl = _safe_identifier(next(n["type"] for n in mock_nodes if n["id"] == edge["target"]), "Entity")
-            rel_label = _safe_identifier(edge["label"], "RELATED_TO")
-
-            cypher = f"""
-            MATCH (s:{source_lbl} {{id: $source_id}})
-            MATCH (t:{target_lbl} {{id: $target_id}})
-            MERGE (s)-[r:{rel_label}]->(t)
-            """
-            self.execute_write(cypher, {
-                "source_id": source_props["id"],
-                "target_id": target_props["id"]
-            })
-        logger.info("Neo4j database seeded with Centurion Plant Train 2 items.")
 
 
 graph_db = Neo4jGraphDB()

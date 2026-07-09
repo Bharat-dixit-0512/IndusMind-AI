@@ -103,7 +103,11 @@ def process_document_task(document_id: str, session_id: str) -> None:
         logger.info("Extracting entities and relationships for Neo4j...")
         try:
             from app.services.entity_extractor import extract_and_sync_entities
-            extract_and_sync_entities(document.filename, text_content, str(document.uploaded_by), str(document.id))
+            extract_and_sync_entities(
+                document.filename, text_content, str(document.uploaded_by), str(document.id),
+                file_type=document.file_type,
+                upload_time=document.created_at.isoformat() if document.created_at else None,
+            )
             logger.info("Neo4j knowledge graph updated successfully.")
         except Exception as graph_err:
             logger.error(f"Neo4j extraction/sync failed (non-blocking for document status): {graph_err}")

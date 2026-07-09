@@ -36,25 +36,18 @@ def _graph_entity_context(query: str, user_id: str) -> tuple[List[Dict[str, Any]
       - graph_visual_context: the matched neighborhood (or the whole graph, if
         nothing matched) for the frontend graph view.
 
-    Only nodes owned by `user_id` (or ownerless legacy/demo-seeded nodes) are
-    ever considered — entities extracted from another user's documents must
-    never leak into this user's retrieval or answers.
+    Only nodes owned by `user_id` are ever considered (see
+    graph_db.get_owned_graph) — entities from another user's documents, and
+    any ownerless orphan/demo data, never leak into this user's answers.
 
     This generalizes beyond the old industrial equipment-ID-only regex match —
     any extracted entity (Person, Organization, Skill, Project, Machine, etc.)
     can be matched, so retrieval works the same for a resume or a ticket as it
     does for a maintenance record.
     """
-    graph_data = graph_db.get_all_nodes_and_edges()
-    owned_nodes = [
-        n for n in graph_data.get("nodes", [])
-        if n.get("data", {}).get("user_id") in (None, user_id)
-    ]
-    owned_ids = {n["id"] for n in owned_nodes}
-    all_edges = [
-        e for e in graph_data.get("relationships", [])
-        if e["source"] in owned_ids and e["target"] in owned_ids
-    ]
+    owned_graph = graph_db.get_owned_graph(user_id)
+    owned_nodes = owned_graph["nodes"]
+    all_edges = owned_graph["relationships"]
 
     query_lower = query.lower()
     matched_ids = set()
@@ -201,6 +194,11 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
         # 3. Route & Process
         result = self._route(intent, query, vector_chunks, graph_triples, graph_visual_context, agent_logs)
 
+        # Expose the classified intent so the chat endpoint can act on it
+        # (e.g. actually generate a report for a REPORTS request). Not part of
+        # the ChatResponse schema — consumed server-side only.
+        result["intent"] = intent
+
         retrieved_docs = sorted({c.get("metadata", {}).get("filename", "Unknown Document") for c in vector_chunks})
         graph_node_count = len(result.get("graph_context") or [])
         logger.info(
@@ -307,16 +305,19 @@ Output ONLY the category name ("COMPLIANCE", "MAINTENANCE", "KNOWLEDGE", "REPORT
             }
 
         elif intent == "REPORTS":
-            agent_logs.append({"agent_name": "Report Agent", "status": "COMPLETED", "log_message": "Compiling PDF document and running ReportLab formatter."})
-            # Simulate a quick PDF details payload response
-            response_text = "### Report Generation Initialized\n\nI have invoked the **Report Agent** to compile your requested document. You can download the completed document directly from the **Reports** section of the dashboard."
+            # The report is actually generated and persisted by the chat
+            # endpoint (see app.api.chat._handle_report_request), which has the
+            # DB session + user needed to save the Report row. This branch just
+            # provides the placeholder the endpoint overwrites with the real
+            # outcome — it never claims success on its own.
+            agent_logs.append({"agent_name": "Report Agent", "status": "COMPLETED", "log_message": "Compiling report from retrieved documents and knowledge graph."})
             return {
-                "response": response_text,
-                "citations": [],
+                "response": "Generating your report…",
+                "citations": _citations_from_chunks(vector_chunks, "Reference excerpt from uploaded document."),
                 "graph_context": graph_visual_context.get("nodes", []) if isinstance(graph_visual_context, dict) else [],
-                "confidence_score": 1.00,
-                "reasoning_steps": ["Received PDF report generation query.", "Dispatched request details to Report Agent."],
-                "evidence_base": ["Report Template - Standard RCA & Compliance layout"],
+                "confidence_score": 0.0,
+                "reasoning_steps": ["Classified request as report generation."],
+                "evidence_base": [],
                 "timeline": [],
                 "agent_logs": agent_logs
             }

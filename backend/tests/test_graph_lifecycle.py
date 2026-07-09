@@ -76,6 +76,36 @@ def test_shared_entity_merges_and_survives_partial_deletion(client):
     assert python_nodes == [], "entity referenced by no surviving document must be fully removed"
 
 
+def test_machine_id_variants_merge_to_one_node(client):
+    """
+    'Pump P-102', 'P102' and 'Pump-P102' refer to the same asset and must
+    normalize to a single Machine node (see entity_extractor._canonical_machine),
+    not three near-duplicates.
+    """
+    token = register_user(client, unique_email("dedup"))
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/v1/documents/upload", headers=headers,
+        files={"file": ("wo.txt", io.BytesIO(
+            b"Work order for Pump P-102. The P102 pump was inspected. Pump-P102 seal replaced."
+        ), "text/plain")},
+    )
+    assert resp.status_code == 201, resp.text
+
+    graph = client.get("/api/v1/graph/", headers=headers).json()
+    machines = [n for n in graph["nodes"] if n["type"] == "Machine"]
+    codes = {n["data"].get("code") for n in machines}
+    assert codes == {"P-102"}, f"machine variants must merge to one node, got {codes}"
+    assert len(machines) == 1
+
+    # The Document node must carry its own metadata (source of truth).
+    doc_nodes = [n for n in graph["nodes"] if n["type"] == "Document"]
+    assert len(doc_nodes) == 1
+    assert doc_nodes[0]["data"].get("file_type") == "txt"
+    assert doc_nodes[0]["data"].get("filename") == "wo.txt"
+
+
 def test_delete_removes_document_node_itself(client):
     token = register_user(client, unique_email("graphdocnode"))
     headers = auth_headers(token)
@@ -95,3 +125,42 @@ def test_delete_removes_document_node_itself(client):
     graph = client.get("/api/v1/graph/", headers=headers).json()
     assert not any(n["type"] == "Document" and n["data"].get("document_id") == doc_id for n in graph["nodes"])
     assert not any(n["type"] == "Skill" and (n["data"].get("name") or "").lower() == "kubernetes" for n in graph["nodes"])
+
+
+def test_ownerless_and_orphan_nodes_are_purged_and_never_shown(client):
+    """
+    An ownerless node (no user_id, no document provenance) — the shape the old
+    demo-seed feature produced — must never appear in any user's graph and must
+    be purged by reconcile, so the graph reflects only uploaded documents.
+    """
+    from app.services.graph_db import graph_db
+
+    # Simulate leftover demo/seed pollution directly in the graph store.
+    graph_db._mock_db["nodes"].append({
+        "id": "seed_1", "type": "Machine",
+        "data": {"id": "SEED-PUMP", "name": "Centrifugal Pump P-102", "label": "Machine: Centrifugal Pump P-102"},
+    })
+    graph_db._mock_db["nodes"].append({
+        "id": "seed_2", "type": "Engineer",
+        "data": {"id": "SEED-ENG", "name": "Elena Rostova", "label": "Engineer: Elena Rostova"},
+    })
+    graph_db._mock_db["relationships"].append({
+        "id": "seed_rel", "source": "seed_1", "target": "seed_2", "label": "MAINTAINED_BY",
+    })
+
+    token = register_user(client, unique_email("seedcheck"))
+    headers = auth_headers(token)
+
+    # Ownerless seed nodes must never be visible to a user.
+    graph = client.get("/api/v1/graph/", headers=headers).json()
+    assert not any((n["data"].get("name") or "") in ("Centrifugal Pump P-102", "Elena Rostova") for n in graph["nodes"])
+
+    # Maintenance overview must not count seed nodes as discovered assets.
+    overview = client.get("/api/v1/maintenance/overview", headers=headers).json()
+    assert not any(a["name"] in ("Centrifugal Pump P-102", "Elena Rostova") for a in overview["assets"])
+
+    # Reconcile against the real (empty) document set must physically purge them.
+    graph_db.reconcile_with_documents(set())
+    remaining = {n["id"] for n in graph_db._mock_db["nodes"]}
+    assert "seed_1" not in remaining and "seed_2" not in remaining
+    assert not any(r["id"] == "seed_rel" for r in graph_db._mock_db["relationships"])

@@ -149,9 +149,3 @@ def test_cannot_access_or_delete_another_users_document(client):
     # And must not appear in the intruder's own document list
     resp = client.get("/api/v1/documents/list", headers=auth_headers(token_intruder))
     assert all(d["id"] != doc_id for d in resp.json())
-
-
-def test_graph_reseed_requires_admin(client):
-    token = register_user(client, unique_email("nonadmin"))
-    resp = client.post("/api/v1/graph/reseed", headers=auth_headers(token))
-    assert resp.status_code == 403

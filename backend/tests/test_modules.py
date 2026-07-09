@@ -120,3 +120,38 @@ def test_report_generation_and_ownership(client):
     victim_id = my_reports[0]["id"]
     resp = client.get(f"/api/v1/reports/download/{victim_id}", headers=auth_headers(other))
     assert resp.status_code == 404
+
+
+def test_chat_report_request_actually_creates_report(client):
+    """
+    Asking the chat for a report must ACTUALLY generate + persist one that then
+    appears in the Reports section — not just print a stub message.
+    """
+    token = register_user(client, unique_email("chatreport"))
+    headers = auth_headers(token)
+    client.post(
+        "/api/v1/documents/upload", headers=headers,
+        files={"file": ("annual.txt", io.BytesIO(
+            b"NovaTech Annual Plant Performance Report. Last year revenue was strong. "
+            b"Pump P-102 uptime improved after preventive maintenance."
+        ), "text/plain")},
+    )
+
+    # Reports empty to start.
+    assert client.get("/api/v1/reports/list", headers=headers).json() == []
+
+    # Ask the chat for a report.
+    resp = client.post("/api/v1/chat/", headers=headers,
+                       json={"message": "give me the annual report of last year", "history": []})
+    assert resp.status_code == 200
+    body = resp.json()
+    # Response must not be the old fabricated stub.
+    assert "Report Generation Initialized" not in body["response"]
+    assert "report" in body["response"].lower()
+
+    # A real report row must now exist and be downloadable as a PDF.
+    reports = client.get("/api/v1/reports/list", headers=headers).json()
+    assert len(reports) == 1
+    dl = client.get(f"/api/v1/reports/download/{reports[0]['id']}", headers=headers)
+    assert dl.status_code == 200
+    assert dl.headers["content-type"] == "application/pdf"

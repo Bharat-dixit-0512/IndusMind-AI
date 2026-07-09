@@ -69,10 +69,9 @@ def on_startup():
     except Exception as e:
         logger.error(f"Failed to reconcile vector index with database: {e}")
 
-    # 3. Verify graph database connectivity (no demo data is seeded automatically —
-    #    the graph only reflects entities extracted from documents you actually
-    #    upload. Use POST /api/v1/graph/reseed to explicitly load the optional
-    #    Centurion Plant sample dataset for demo purposes.)
+    # 3. Verify graph database connectivity. The graph only ever reflects
+    #    entities extracted from documents you actually upload — there is no
+    #    demo/seed data anywhere in the runtime.
     try:
         logger.info("Checking Graph database connectivity...")
         if graph_db.active:

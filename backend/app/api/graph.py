@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends
 from app.services.graph_db import graph_db
-from app.api.deps import get_current_user, RoleChecker
-from app.models.user import User, UserRole
+from app.api.deps import get_current_user
+from app.models.user import User
 
 router = APIRouter()
-require_admin = RoleChecker([UserRole.ADMIN])
 
 
 @router.get("/")
@@ -13,8 +12,9 @@ def get_graph_data(
 ):
     """
     Returns nodes and relationships formatted for React Flow frontend rendering,
-    restricted to entities extracted from this user's own documents (plus any
-    ownerless legacy/demo-seeded nodes) — never another user's entities.
+    restricted to entities extracted from this user's own uploaded documents —
+    never another user's entities, and never ownerless demo/seed data (the
+    graph reflects only currently-uploaded documents).
     """
     return graph_db.get_owned_graph(str(current_user.id))
 
@@ -32,17 +32,3 @@ def get_recurring_patterns(
     """
     patterns = graph_db.find_recurring_entities(str(current_user.id))
     return {"patterns": patterns}
-
-
-@router.post("/reseed", status_code=status.HTTP_200_OK)
-def reseed_graph_database(
-    current_user: User = Depends(require_admin)
-):
-    """
-    Resets and re-seeds the graph with the optional Centurion Petrochemical
-    Plant demo dataset. ADMIN-only: this repopulates a shared, ownerless demo
-    layer visible to every user, so it must not be triggerable by any random
-    authenticated account.
-    """
-    graph_db.load_centurion_mock_graph()
-    return {"detail": "Mock graph database successfully seeded"}

@@ -15,12 +15,8 @@ logger = logging.getLogger(__name__)
 # only ever hands it plain extracted data.
 
 # Dictionary-matching vocabularies for Engineer/Location/SparePart entities. These are
-# intentionally empty by default so entity extraction only ever reflects names/terms
-# that are actually present in documents a user uploads — never a predefined demo set.
-#
-# To try the extractor against the optional Centurion Plant sample dataset, import
-# CENTURION_KNOWN_ENGINEERS / CENTURION_KNOWN_LOCATIONS / CENTURION_KNOWN_PARTS from
-# app.services.seed_data and assign them here manually; they are not wired in by default.
+# intentionally empty so entity extraction only ever reflects names/terms that are
+# actually present in documents a user uploads — never a predefined demo set.
 KNOWN_ENGINEERS: List[str] = []
 KNOWN_LOCATIONS: List[str] = []
 KNOWN_PARTS: List[str] = []
@@ -64,6 +60,32 @@ _DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Equipment-tag matcher that tolerates the punctuation/spacing variants people
+# actually write — "P-102", "P102", "P 102", "Pump P-102" all resolve to the
+# same canonical code "P-102" (see _canonical_machine), so they merge into one
+# node instead of several near-duplicates.
+_MACHINE_RE = re.compile(r"\b([PCDT])[\s-]?(\d{3})\b", re.IGNORECASE)
+_MACHINE_TYPES = {"P": "Pump", "C": "Compressor", "D": "Drum", "T": "Turbine"}
+
+# Collapses any name/code into a stable canonical key used to build node IDs,
+# so casing/punctuation/whitespace differences ("ACME Inc." vs "acme  inc")
+# never create duplicate nodes.
+_CANON_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _canonical_key(text: str) -> str:
+    return _CANON_RE.sub("-", str(text).lower()).strip("-")
+
+
+def _entity_id(label: str, key: str) -> str:
+    """Deterministic, normalized node id for an entity of `label` named `key`."""
+    return f"{label.lower()}::{_canonical_key(key)}"
+
+
+def _canonical_machine(letter: str, num: str) -> str:
+    """Canonical equipment code, e.g. ('p','102') or ('P','102') -> 'P-102'."""
+    return f"{letter.upper()}-{num}"
+
 
 def rule_based_extract(text: str) -> Dict[str, List[Dict[str, Any]]]:
     """
@@ -84,34 +106,37 @@ def rule_based_extract(text: str) -> Dict[str, List[Dict[str, Any]]]:
         "Contact": [],
     }
 
-    # 1. Matches Asset IDs like P-102, C-301, T-502 (industrial equipment tagging convention)
-    machine_matches = re.findall(r'\b([PCDT]-\d{3})\b', text, re.IGNORECASE)
-    for m in set(machine_matches):
-        m_upper = m.upper()
-        m_type = "Pump" if m_upper.startswith("P") else ("Compressor" if m_upper.startswith("C") else "Turbine")
+    # 1. Asset IDs like P-102 / P102 / "Pump P-102" — all normalized to one
+    #    canonical code so spelling variants merge into a single Machine node.
+    seen_codes = set()
+    for letter, num in _MACHINE_RE.findall(text):
+        code = _canonical_machine(letter, num)
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
+        m_type = _MACHINE_TYPES.get(letter.upper(), "Equipment")
         entities["Machine"].append({
-            "id": m_upper,
-            "name": f"{m_type} {m_upper}",
+            "id": _entity_id("Machine", code),
+            "name": f"{m_type} {code}",
+            "code": code,
             "type": m_type,
             "status": "OPERATIONAL"
         })
 
     # 2. Matches SOP codes like SOP-MECH-022, SOP-ELEC-101
-    sop_matches = re.findall(r'\b(SOP-[A-Z]+-\d{3})\b', text, re.IGNORECASE)
-    for s in set(sop_matches):
+    for s in set(m.upper() for m in re.findall(r'\b(SOP-[A-Z]+-\d{3})\b', text, re.IGNORECASE)):
         entities["SOP"].append({
-            "id": s.upper(),
-            "title": f"Standard Procedure {s.upper()}",
-            "code": s.upper()
+            "id": _entity_id("SOP", s),
+            "title": f"Standard Procedure {s}",
+            "code": s
         })
 
     # 3. Dictionary matching for Engineers (opt-in vocabulary, empty by default)
     for eng in KNOWN_ENGINEERS:
         if eng in text_lower:
             name = " ".join([w.capitalize() for w in eng.split()])
-            initials = "".join([w[0].upper() for w in eng.split()])
             entities["Engineer"].append({
-                "id": f"ENG-{initials}",
+                "id": _entity_id("Engineer", name),
                 "name": name,
                 "specialization": "Maintenance Specialist"
             })
@@ -119,9 +144,8 @@ def rule_based_extract(text: str) -> Dict[str, List[Dict[str, Any]]]:
     # 4. Dictionary matching for Locations (opt-in vocabulary, empty by default)
     for loc in KNOWN_LOCATIONS:
         if loc in text_lower:
-            loc_id = "LOC-" + loc.upper().replace(" ", "_")
             entities["Location"].append({
-                "id": loc_id,
+                "id": _entity_id("Location", loc),
                 "name": loc.title()
             })
 
@@ -129,17 +153,17 @@ def rule_based_extract(text: str) -> Dict[str, List[Dict[str, Any]]]:
     for part in KNOWN_PARTS:
         if part in text_lower:
             code_match = re.search(r'([ksj]-\d{3})', part, re.IGNORECASE)
-            part_id = "PART-" + (code_match.group(1).upper() if code_match else part.upper().replace(" ", "_"))
+            part_number = code_match.group(1).upper() if code_match else "UNKNOWN"
             entities["SparePart"].append({
-                "id": part_id,
+                "id": _entity_id("SparePart", part_number if code_match else part),
                 "name": part.title(),
-                "part_number": code_match.group(1).upper() if code_match else "UNKNOWN"
+                "part_number": part_number
             })
 
     # 6. Generic organization-name detection (companies, universities, institutions)
     for org in set(m.strip() for m in _ORG_RE.findall(text)):
         entities["Organization"].append({
-            "id": "ORG-" + re.sub(r"\W+", "_", org.upper()).strip("_"),
+            "id": _entity_id("Organization", org),
             "name": org,
         })
 
@@ -147,21 +171,21 @@ def rule_based_extract(text: str) -> Dict[str, List[Dict[str, Any]]]:
     for skill in KNOWN_SKILLS:
         if re.search(r'\b' + re.escape(skill) + r'\b', text_lower):
             entities["Skill"].append({
-                "id": "SKILL-" + re.sub(r"\W+", "_", skill.upper()).strip("_"),
+                "id": _entity_id("Skill", skill),
                 "name": skill.title(),
             })
 
     # 8. Generic date mentions (useful for timelines, tenure ranges, deadlines, etc.)
     for date_str in set(m.strip() for m in _DATE_RE.findall(text)):
         entities["Date"].append({
-            "id": "DATE-" + re.sub(r"\W+", "_", date_str.upper()).strip("_"),
+            "id": _entity_id("Date", date_str),
             "value": date_str,
         })
 
     # 9. Contact emails (useful anchor entities for Person nodes)
     for email in set(_EMAIL_RE.findall(text)):
         entities["Contact"].append({
-            "id": "CONTACT-" + re.sub(r"\W+", "_", email.upper()),
+            "id": _entity_id("Contact", email),
             "email": email,
         })
 
@@ -268,7 +292,14 @@ Do not write markdown formatting (like ```json) or explanation outside the JSON 
         return empty_result
 
 
-def extract_and_sync_entities(filename: str, text: str, user_id: str, document_id: str) -> None:
+def extract_and_sync_entities(
+    filename: str,
+    text: str,
+    user_id: str,
+    document_id: str,
+    file_type: str = None,
+    upload_time: str = None,
+) -> None:
     """
     Main pipeline: runs rule-based parser, queries Gemini for relationships,
     and updates the active Neo4j graph database.
@@ -296,7 +327,8 @@ def extract_and_sync_entities(filename: str, text: str, user_id: str, document_i
     def scoped(raw_id: str) -> str:
         return f"{raw_id}::{user_id}"
 
-    doc_node_id = graph_db.upsert_document(document_id, filename, user_id)
+    doc_node_id = graph_db.upsert_document(document_id, filename, user_id,
+                                           file_type=file_type, upload_time=upload_time)
 
     # 1. Rule-based extraction
     rules_entities = rule_based_extract(text)
@@ -305,7 +337,9 @@ def extract_and_sync_entities(filename: str, text: str, user_id: str, document_i
                 f"{ {k: len(v) for k, v in rules_entities.items()} }")
 
     # 2. Sync rule-based entities to Neo4j, scoped per-user; merged across
-    # this user's documents (see scoped() above)
+    # this user's documents (see scoped() above). IDs are already canonical
+    # (see _entity_id), so re-encountering the same entity in another document
+    # updates the one node rather than creating a duplicate.
     for label, node_list in rules_entities.items():
         for node in node_list:
             node_id = scoped(node["id"])
@@ -313,27 +347,36 @@ def extract_and_sync_entities(filename: str, text: str, user_id: str, document_i
             graph_db.upsert_node(label, node_id, props, document_id)
             graph_db.link_mention(doc_node_id, node_id)
 
-    # 3. Semantic extraction via Gemini (works with the original, unscoped ids
-    # it generates itself; everything is scoped uniformly at sync time below)
+    # 3. Semantic extraction via Gemini for inter-entity relationships.
     semantic_data = extract_semantic_relations_with_gemini(text, rules_entities)
     logger.info(f"Semantic extraction found {len(semantic_data.get('nodes', []))} node(s) and "
                 f"{len(semantic_data.get('relationships', []))} relationship(s) in {filename}")
 
-    # 4. Sync semantic nodes, scoped per-user; merged across this user's
-    # documents
+    # 4. Sync semantic nodes. Gemini's own generated ids are inconsistent
+    # across documents ("PERSON-JANE-DOE" vs "JANE_DOE"), so we re-key each
+    # node to a canonical id derived from its NAME (falling back to its raw id)
+    # and record the mapping, so the same real-world entity merges into one
+    # node and its relationships still resolve.
+    id_remap: Dict[str, str] = {}
     for node in semantic_data.get("nodes", []):
         label = node.get("type") or "Entity"
         props = node.get("properties", {})
         raw_id = props.get("id")
+        name = props.get("name") or props.get("title")
+        if not (raw_id or name):
+            continue
+        canonical = _entity_id(label, name or raw_id)
         if raw_id:
-            node_id = scoped(raw_id)
-            scoped_props = {**props, "id": node_id, "user_id": user_id}
-            graph_db.upsert_node(label, node_id, scoped_props, document_id)
-            graph_db.link_mention(doc_node_id, node_id)
+            id_remap[raw_id] = canonical
+        node_id = scoped(canonical)
+        scoped_props = {**props, "id": node_id, "user_id": user_id}
+        graph_db.upsert_node(label, node_id, scoped_props, document_id)
+        graph_db.link_mention(doc_node_id, node_id)
 
-    # 5. Sync relationships, scoped per-user (same scoping applies uniformly
-    # whether source/target came from rule-based extraction or Gemini);
-    # merged across documents that independently assert the same edge
+    # 5. Sync relationships. Endpoints referencing a Gemini node are remapped to
+    # its canonical id; endpoints referencing rule-based entities are already
+    # canonical (their ids were shown to Gemini verbatim). Merged across
+    # documents that independently assert the same edge.
     for rel in semantic_data.get("relationships", []):
         source_id = rel.get("source_id")
         target_id = rel.get("target_id")
@@ -341,6 +384,8 @@ def extract_and_sync_entities(filename: str, text: str, user_id: str, document_i
         props = rel.get("properties", {})
 
         if source_id and target_id:
-            graph_db.upsert_relationship(scoped(source_id), scoped(target_id), rel_type, props, document_id)
+            src = id_remap.get(source_id, source_id)
+            tgt = id_remap.get(target_id, target_id)
+            graph_db.upsert_relationship(scoped(src), scoped(tgt), rel_type, props, document_id)
 
     logger.info("Hybrid entity extraction completed and synced to Graph Database.")
