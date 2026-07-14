@@ -334,7 +334,7 @@ function ChatInner() {
         }
       `}</style>
 
-      <div className="flex flex-col h-[calc(100vh-60px)] bg-[#FAFAF8]">
+      <div className="flex flex-col flex-1 min-h-0 bg-[#FAFAF8]">
         {/* Header */}
         <div className="px-6 py-4 flex-shrink-0 bg-white border-b border-[#E2E8F0]">
           <div className="flex items-center justify-between gap-3">

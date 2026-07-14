@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { Menu, Brain, Search, X, Command, MessageSquare, Send, Sparkles, FileText, Settings, Wrench, ShieldCheck, BarChart3 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import { useAuth } from "@/context/AuthContext";
@@ -13,6 +13,7 @@ import SearchLoader from "@/components/loaders/SearchLoader";
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { token, isLoading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -99,7 +100,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <ChatProvider>
       <PageTransitionBar />
-      <div className="flex min-h-screen bg-[#FAFAF8] relative overflow-hidden">
+      <div className={`flex ${pathname === "/chat" ? "h-screen max-h-screen overflow-hidden" : "min-h-screen"} bg-[#FAFAF8] relative overflow-hidden`}>
         {/* Animated backdrop mesh circles */}
         <div className="absolute top-[-150px] left-[-150px] bg-mesh-circle-1 z-0" />
         <div className="absolute bottom-[-150px] right-[-150px] bg-mesh-circle-2 z-0" />
@@ -111,7 +112,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
         
-        <div className={`flex-1 transition-all duration-300 ${sidebarCollapsed ? "md:ml-16" : "md:ml-60"} flex flex-col min-h-screen overflow-x-hidden z-10`}>
+        <div className={`flex-1 transition-all duration-300 ${sidebarCollapsed ? "md:ml-16" : "md:ml-60"} flex flex-col ${pathname === "/chat" ? "h-screen max-h-screen overflow-hidden" : "min-h-screen"} overflow-x-hidden z-10`}>
           {/* White top navigation bar */}
           <header className="sticky top-0 z-20 flex items-center justify-between px-6 py-3.5 bg-white border-b border-[#E2E8F0] shadow-sm">
             <div className="flex items-center gap-3">
@@ -140,7 +141,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           </header>
 
-          <main className="flex-1 pb-16">{children}</main>
+          <main className={`flex-1 flex flex-col min-h-0 ${pathname === "/chat" ? "pb-0 overflow-hidden" : "pb-16"}`}>{children}</main>
         </div>
 
         {/* Global Command Palette */}
@@ -277,7 +278,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Floating trigger button when drawer is closed */}
-        {!assistantOpen && (
+        {!assistantOpen && pathname !== "/chat" && (
           <button
             onClick={() => setAssistantOpen(true)}
             className="fixed bottom-6 right-6 w-12 h-12 rounded-full bg-gradient-to-tr from-blue-600 to-blue-500 text-white flex items-center justify-center shadow-lg hover:shadow-xl hover:scale-110 transition-all cursor-pointer border-0 z-40 group"
