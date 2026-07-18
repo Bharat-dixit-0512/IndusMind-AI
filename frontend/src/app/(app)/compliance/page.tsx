@@ -40,8 +40,8 @@ function scoreTone(score: number, hasData: boolean): Tone {
   return "danger";
 }
 const TONE_HEX: Record<Tone, string> = {
-  neutral: "#8794a7", success: "#047857", warning: "#b45309",
-  danger: "#b42318", info: "#175cd3", brand: "#4f46e5",
+  neutral: "var(--color-ink-tertiary)", success: "var(--color-success)", warning: "var(--color-warning)",
+  danger: "var(--color-danger)", info: "var(--color-info)", brand: "var(--color-brand)",
 };
 
 export default function CompliancePage() {
@@ -85,7 +85,7 @@ export default function CompliancePage() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-ink">Compliance Intelligence</h1>
+          <h1 className="t-page text-ink">Compliance Intelligence</h1>
           <p className="mt-0.5 max-w-2xl text-xs text-ink-secondary">
             Assessed only against standards your uploaded documents actually reference — every finding cites its source.
           </p>

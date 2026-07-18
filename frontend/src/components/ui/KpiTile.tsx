@@ -1,13 +1,7 @@
 "use client";
 
 import * as React from "react";
-import {
-  motion,
-  useMotionValue,
-  useTransform,
-  animate,
-  useReducedMotion,
-} from "framer-motion";
+import { motion, animate, useReducedMotion } from "framer-motion";
 import { DURATION, EASE } from "@/components/motion/variants";
 import { cn } from "@/lib/utils";
 import type { Tone } from "./Badge";
@@ -22,23 +16,31 @@ import type { Tone } from "./Badge";
  */
 function AnimatedNumber({ value }: { value: number }) {
   const reduceMotion = useReducedMotion();
-  const count = useMotionValue(reduceMotion ? value : 0);
-  const text = useTransform(count, (v) => Math.round(v).toLocaleString());
+  // React state, not a MotionValue rendered as a motion child: the latter is
+  // server-rendered as its *initial* text and the subscription does not reliably
+  // re-attach after hydration, which strands a permanent "0" in the DOM.
+  const [shown, setShown] = React.useState(value);
 
   React.useEffect(() => {
     // Driving an external animation system is exactly what effects are for.
-    if (reduceMotion) {
-      count.set(value);
-      return;
-    }
-    const controls = animate(count, value, { duration: DURATION.slow, ease: EASE });
+    // State already holds the true figure, so the no-animation path (reduced
+    // motion, throttled rAF, background tab) fails safe to the correct number
+    // rather than a stale zero. The count-up only ever overwrites it downward
+    // on the first frame and restores it on completion.
+    if (reduceMotion) return;
+    const controls = animate(0, value, {
+      duration: DURATION.slow,
+      ease: EASE,
+      onUpdate: (v) => setShown(Math.round(v)),
+      onComplete: () => setShown(value),
+    });
     return () => {
       controls.stop();
-      count.set(value); // never leave a half-counted, incorrect figure on screen
+      setShown(value); // never leave a half-counted, incorrect figure on screen
     };
-  }, [count, value, reduceMotion]);
+  }, [value, reduceMotion]);
 
-  return <motion.span>{text}</motion.span>;
+  return <>{shown.toLocaleString()}</>;
 }
 
 const ACCENT: Record<Tone, string> = {
@@ -76,10 +78,16 @@ export function KpiTile({
   className,
 }: KpiTileProps) {
   return (
-    <div
+    <motion.div
+      // Perceptible hover response: lift + elevation, not just a border tint.
+      whileHover={{ y: -4 }}
+      transition={{ duration: DURATION.fast, ease: EASE }}
       className={cn(
-        "group rounded-ui-xl border border-line bg-surface p-4 shadow-e1",
-        "transition-colors duration-150 hover:border-line-strong",
+        // h-full so tiles in a row match height regardless of whether they carry
+        // a `sub` line — the grid stretches the wrapper, but without this the
+        // tile shrinks to its own content and the row looks ragged.
+        "group h-full rounded-ui-xl border border-line bg-surface p-4 shadow-e2",
+        "transition-[box-shadow,border-color] duration-200 hover:border-brand-line hover:shadow-e3",
         className
       )}
     >
@@ -99,6 +107,6 @@ export function KpiTile({
       </p>
 
       {sub && <p className="mt-1 text-[11px] font-medium text-ink-tertiary">{sub}</p>}
-    </div>
+    </motion.div>
   );
 }

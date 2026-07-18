@@ -8,7 +8,7 @@ export function Skeleton({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        "animate-pulse rounded-ui-md bg-line/70",
+        "ui-skeleton rounded-ui-md",
         className
       )}
     />
@@ -18,7 +18,7 @@ export function Skeleton({ className }: { className?: string }) {
 /** Skeleton matching the KpiTile footprint. */
 export function SkeletonKpi() {
   return (
-    <div className="rounded-ui-xl border border-line bg-surface p-4 shadow-e1">
+    <div className="rounded-ui-xl border border-line bg-surface p-4 shadow-e2">
       <Skeleton className="h-3 w-20" />
       <Skeleton className="mt-3 h-7 w-14" />
       <Skeleton className="mt-2 h-2.5 w-24" />

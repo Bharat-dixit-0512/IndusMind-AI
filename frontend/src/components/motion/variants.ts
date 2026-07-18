@@ -11,15 +11,20 @@ import type { Variants, Transition } from "framer-motion";
 // Decelerate curve (matches --ease-enterprise in globals.css).
 export const EASE: Transition["ease"] = [0.22, 1, 0.36, 1];
 
+/**
+ * Durations are deliberately *perceptible*. An earlier pass used 0.15–0.25s
+ * with 8px travel, which is technically animated but finishes before the eye
+ * registers it — motion that can't be seen may as well not exist.
+ */
 export const DURATION = {
-  fast: 0.15,
-  base: 0.25,
-  slow: 0.4,
+  fast: 0.2,
+  base: 0.38,
+  slow: 0.6,
 } as const;
 
 /** Page-level fade+lift. Paired with PageTransition. */
 export const pageVariants: Variants = {
-  hidden: { opacity: 0, y: 8 },
+  hidden: { opacity: 0, y: 14 },
   show: {
     opacity: 1,
     y: 0,
@@ -31,13 +36,13 @@ export const pageVariants: Variants = {
 export const staggerContainer: Variants = {
   hidden: {},
   show: {
-    transition: { staggerChildren: 0.05, delayChildren: 0.04 },
+    transition: { staggerChildren: 0.07, delayChildren: 0.06 },
   },
 };
 
 /** Child of staggerContainer (cards, rows, KPI tiles). */
 export const staggerItem: Variants = {
-  hidden: { opacity: 0, y: 12 },
+  hidden: { opacity: 0, y: 18 },
   show: {
     opacity: 1,
     y: 0,
@@ -61,8 +66,13 @@ export const expandCollapse: Variants = {
   },
 };
 
-/** Subtle lift used on interactive cards. */
+/**
+ * Hover lift for interactive surfaces. Spread onto a motion component:
+ *   <motion.div {...hoverLift}>
+ * (Card exposes an `interactive` prop that does the CSS equivalent for
+ * non-motion surfaces.)
+ */
 export const hoverLift = {
-  rest: { y: 0 },
-  hover: { y: -2, transition: { duration: DURATION.fast, ease: EASE } },
+  whileHover: { y: -3 },
+  transition: { duration: DURATION.fast, ease: EASE },
 } as const;

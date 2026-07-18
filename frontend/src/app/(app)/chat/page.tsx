@@ -29,8 +29,8 @@ function confidenceTone(score: number): Tone {
   return "danger";
 }
 const TONE_HEX: Record<Tone, string> = {
-  neutral: "#8794a7", success: "#047857", warning: "#b45309",
-  danger: "#b42318", info: "#175cd3", brand: "#4f46e5",
+  neutral: "var(--color-ink-tertiary)", success: "var(--color-success)", warning: "var(--color-warning)",
+  danger: "var(--color-danger)", info: "var(--color-info)", brand: "var(--color-brand)",
 };
 
 // ── Markdown wrapper (typography plugin isn't installed — style inline) ──────
@@ -373,7 +373,7 @@ function ChatInner() {
               <Sparkles className="h-4 w-4 text-white" />
             </div>
             <div>
-              <h1 className="text-[13px] font-bold leading-tight text-ink">AI Chat</h1>
+              <h1 className="text-card font-bold leading-tight text-ink">AI Chat</h1>
               <p className="flex items-center gap-1.5 text-[11px] text-ink-tertiary">
                 <StatusDot tone="success" pulse /> Multi-agent RAG · grounded in your documents
               </p>

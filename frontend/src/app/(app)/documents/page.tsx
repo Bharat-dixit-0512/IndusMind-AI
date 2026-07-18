@@ -160,7 +160,7 @@ export default function DocumentsPage() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-ink">Documents</h1>
+          <h1 className="t-page text-ink">Documents</h1>
           <p className="mt-0.5 text-xs text-ink-secondary">
             Everything the platform knows is derived from these files.
           </p>

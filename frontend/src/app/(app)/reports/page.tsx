@@ -1,259 +1,340 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { listReports, generateReport, downloadReportFile, type ReportRecord } from "@/lib/api";
-import { BarChart3, Plus, Download, Loader2, FileText, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  AlertTriangle, BarChart3, Download, FileSearch, FileText, Plus,
+  RefreshCw, Search, ShieldCheck, Wrench, X,
+} from "lucide-react";
+
+import {
+  downloadReportFile, generateReport, listReports, type ReportRecord,
+} from "@/lib/api";
+import PageTransition from "@/components/motion/PageTransition";
+import { staggerContainer, staggerItem } from "@/components/motion/variants";
+import {
+  Badge, Button, Card, CardContent, CardHeader, CardTitle, Dialog, EmptyState,
+  Skeleton, type Tone,
+} from "@/components/ui";
+import { cn } from "@/lib/utils";
+
+/* Report metadata (title, type, timestamp, author) is real. The API does not
+   track downloads, so this page shows *generation* history — it never invents
+   download counts, and never fabricates a per-report status. */
 
 const REPORT_TYPES = [
-  { value: "RCA",         label: "Root Cause Analysis",    color: "#DC2626" },
-  { value: "COMPLIANCE",  label: "Compliance Audit",       color: "#4F46E5" },
-  { value: "MAINTENANCE", label: "Maintenance Report",     color: "#16A34A" },
-  { value: "INSPECTION",  label: "Inspection Summary",     color: "#F59E0B" },
-  { value: "EXECUTIVE",   label: "Executive Summary",      color: "#7C3AED" },
-];
+  { value: "RCA", label: "Root cause analysis", icon: Wrench, tone: "danger" as Tone },
+  { value: "COMPLIANCE", label: "Compliance audit", icon: ShieldCheck, tone: "brand" as Tone },
+  { value: "MAINTENANCE", label: "Maintenance report", icon: Wrench, tone: "success" as Tone },
+  { value: "INSPECTION", label: "Inspection summary", icon: FileSearch, tone: "warning" as Tone },
+  { value: "EXECUTIVE", label: "Executive summary", icon: BarChart3, tone: "info" as Tone },
+] as const;
 
-const TYPE_COLORS: Record<string, string> = {
-  RCA: "#DC2626", COMPLIANCE: "#4F46E5", MAINTENANCE: "#16A34A", INSPECTION: "#F59E0B", EXECUTIVE: "#7C3AED",
-};
+const TYPE_MAP = Object.fromEntries(REPORT_TYPES.map((t) => [t.value, t])) as Record<
+  string,
+  (typeof REPORT_TYPES)[number]
+>;
+
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
 
 export default function ReportsPage() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-  const [newType, setNewType] = useState("RCA");
-  const [generating, setGenerating] = useState(false);
-  const [generationStep, setGenerationStep] = useState(0);
-  const [stepText, setStepText] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newType, setNewType] = useState<string>("RCA");
+  const [generating, setGenerating] = useState(false);
+
+  const [filter, setFilter] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  const refresh = useCallback(() => { setLoading(true); setReloadKey((k) => k + 1); }, []);
 
   useEffect(() => {
-    listReports()
-      .then(setReports)
-      .catch(e => setError(e instanceof Error ? e.message : "Failed to load reports"))
-      .finally(() => setLoading(false));
-  }, []);
+    let alive = true;
+    (async () => {
+      try {
+        const r = await listReports();
+        if (!alive) return;
+        setReports(r); setLoadError(null);
+      } catch {
+        if (alive) setLoadError("Couldn't reach the reports service.");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [reloadKey]);
 
   const handleGenerate = async () => {
     if (!newTitle.trim()) return;
     setGenerating(true);
-    setGenerationStep(1);
-    setStepText("Reading knowledge graph...");
     setError("");
-
-    // Simulate 3-step compilation flow
-    const stepTimer = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        setGenerationStep(2);
-        setStepText("Structuring executive summary...");
-        setTimeout(() => {
-          setGenerationStep(3);
-          setStepText("Formatting PDF download...");
-          setTimeout(() => {
-            resolve();
-          }, 1200);
-        }, 1200);
-      }, 1200);
-    });
-
     try {
-      const [report] = await Promise.all([
-        generateReport(newTitle, newType),
-        stepTimer
-      ]);
-      setReports(r => [report, ...r]);
-      setShowModal(false);
+      // No simulated pipeline: the spinner reflects the real request duration.
+      const report = await generateReport(newTitle.trim(), newType);
+      setReports((r) => [report, ...r]);
+      setDialogOpen(false);
       setNewTitle("");
-      setGenerationStep(0);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate report");
-      setGenerationStep(0);
     } finally {
       setGenerating(false);
     }
   };
 
-  const counts = REPORT_TYPES.map(t => ({
-    ...t,
-    count: reports.filter(r => r.report_type === t.value).length,
-  }));
+  const handleDownload = async (r: ReportRecord) => {
+    setDownloadingId(r.id);
+    setError("");
+    try {
+      await downloadReportFile(r.id, `${r.title || "report"}.pdf`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Download failed");
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const counts = useMemo(
+    () => REPORT_TYPES.map((t) => ({ ...t, count: reports.filter((r) => r.report_type === t.value).length })),
+    [reports]
+  );
+
+  const visible = useMemo(() => {
+    const pool = filter ? reports.filter((r) => r.report_type === filter) : reports;
+    const q = query.trim().toLowerCase();
+    return q ? pool.filter((r) => (r.title ?? "").toLowerCase().includes(q)) : pool;
+  }, [reports, filter, query]);
 
   return (
-    <div className="p-6 md:p-8 space-y-6 bg-[#F4F6FB]">
+    <PageTransition className="space-y-4 p-5 md:p-6">
       {/* Header */}
-      <div className="flex items-start justify-between mb-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br from-indigo-600 to-indigo-500">
-              <BarChart3 className="w-4 h-4 text-white" />
-            </div>
-            <h1 className="text-2xl font-extrabold text-[#0F172A] tracking-tight">Reports &amp; Analytics</h1>
-          </div>
-          <p className="text-xs text-[#64748B] font-semibold ml-11">
-            Export and compile auto-generated compliance certificates, Root Cause Analysis, and maintenance checklists.
+          <h1 className="t-page text-ink">Reports</h1>
+          <p className="mt-0.5 text-xs text-ink-secondary">
+            Grounded PDFs compiled from your documents — every report cites its sources.
           </p>
         </div>
-        <button onClick={() => setShowModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer transition-colors">
-          <Plus className="w-4 h-4" /> Generate Report
-        </button>
-      </div>
-
-      {/* Summary tiles */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        {counts.map(c => (
-          <div key={c.value} className="bg-white border border-[#E2E8F0] rounded-xl p-4 shadow-sm transition-all actionable-card">
-            <p className="text-2xl font-extrabold mb-0.5" style={{ color: c.color }}>{c.count}</p>
-            <p className="text-xs text-[#64748B] font-bold">{c.label}</p>
-          </div>
-        ))}
+        <div className="flex items-center gap-2">
+          <Button variant="primary" size="sm" onClick={() => setDialogOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> New report
+          </Button>
+          <Button size="sm" onClick={refresh} disabled={loading}>
+            <RefreshCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} /> Refresh
+          </Button>
+        </div>
       </div>
 
       {error && (
-        <div className="px-4 py-3 border border-red-200 bg-red-50 rounded-xl text-xs text-red-750 font-bold">
-          {error}
-        </div>
+        <Card className="border-danger/30 bg-danger-subtle">
+          <CardContent className="flex items-center gap-2.5 py-2.5">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-danger" />
+            <p className="flex-1 text-xs font-medium text-danger">{error}</p>
+            <button onClick={() => setError("")} className="text-danger/70 hover:text-danger">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Report list */}
-      <div className="bg-white border border-[#E2E8F0] rounded-2xl overflow-hidden shadow-sm">
-        <div className="px-5 py-4 border-b border-[#E2E8F0]">
-          <h2 className="text-xs font-bold uppercase tracking-wider text-[#0F172A]">Generated System Reports</h2>
-        </div>
-        {loading ? (
-          <div className="p-6 space-y-3">
-            {[...Array(4)].map((_, i) => <div key={i} className="h-14 rounded-xl bg-slate-100 animate-pulse" />)}
-          </div>
-        ) : reports.length === 0 ? (
-          <div className="relative p-12 text-center overflow-hidden min-h-[280px] flex flex-col items-center justify-center bg-white">
-            {/* Background mockup outline of a multi-page document */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.06] select-none scale-110">
-              <div className="relative w-44 h-56 border-2 border-dashed border-[#64748B] rounded-lg rotate-[-6deg] translate-x-[-15px] bg-slate-100 flex flex-col p-4 gap-2">
-                <div className="w-1/2 h-3 bg-[#64748B] rounded" />
-                <div className="w-full h-2 bg-[#64748B]/60 rounded" />
-                <div className="w-5/6 h-2 bg-[#64748B]/60 rounded" />
-                <div className="w-full h-2 bg-[#64748B]/60 rounded" />
-              </div>
-              <div className="absolute w-44 h-56 border-2 border-dashed border-[#64748B] rounded-lg rotate-[4deg] translate-x-[15px] translate-y-[6px] bg-white flex flex-col p-4 gap-2 shadow-sm">
-                <div className="w-2/3 h-3 bg-[#64748B] rounded" />
-                <div className="w-full h-2 bg-[#64748B]/60 rounded" />
-                <div className="w-full h-2 bg-[#64748B]/60 rounded" />
-                <div className="w-4/5 h-2 bg-[#64748B]/60 rounded" />
-              </div>
-            </div>
-
-            {/* Main Illustration */}
-            <div className="relative z-10 space-y-3">
-              <div className="w-12 h-12 mx-auto bg-indigo-50 border border-indigo-100 rounded-xl flex items-center justify-center shadow-sm">
-                <FileText className="w-6 h-6 text-indigo-500" />
-              </div>
-              <div>
-                <p className="text-xs font-bold text-[#64748B]">No reports generated yet.</p>
-                <p className="text-[10px] text-[#94A3B8] mt-1 font-semibold max-w-[280px] mx-auto leading-relaxed">
-                  Click &ldquo;Generate Report&rdquo; to build a new PDF document dossier.
-                </p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="divide-y divide-[#E2E8F0]">
-            {reports.map(r => {
-              const color = TYPE_COLORS[r.report_type] ?? "#64748B";
-              return (
-                <div key={r.id} className="flex items-center justify-between gap-4 px-5 py-3.5 hover:bg-[#F8FAFC] transition-colors">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                      style={{ background: `${color}10`, border: `1.5px solid ${color}20` }}>
-                      <FileText className="w-4 h-4" style={{ color }} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-[#0F172A] truncate">{r.title}</p>
-                      <p className="text-[10px] text-[#64748B] font-semibold mt-0.5">
-                        {r.report_type} · {new Date(r.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                      </p>
-                    </div>
-                  </div>
-                  
-                  <div className="flex items-center gap-3">
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold" style={{ background: `${color}10`, color }}>
-                      {r.report_type}
-                    </span>
-                    {r.id && (
-                      <button onClick={() => downloadReportFile(r.id, `${r.title || "report"}.pdf`).catch(console.error)}
-                        title="Download PDF"
-                        className="text-[#64748B] hover:text-[#0F172A] p-1.5 border border-[#E2E8F0] hover:bg-[#F1F5F9] rounded-lg transition-colors cursor-pointer bg-transparent">
-                        <Download className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Generate modal */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
-          <div className="bg-white border border-[#E2E8F0] rounded-2xl p-6 w-full max-w-md shadow-lg space-y-4 im-scale-in">
-            {generationStep > 0 ? (
-              <div className="py-8 flex flex-col items-center justify-center space-y-4 animate-fade-in">
-                <div className="relative w-16 h-16 flex items-center justify-center">
-                  <div className="absolute inset-0 rounded-full border-4 border-t-indigo-600 border-r-indigo-600/30 border-b-indigo-600/10 border-l-indigo-600/30 animate-spin" />
-                  <FileText className="w-6 h-6 text-indigo-600 animate-pulse" />
-                </div>
-                <div className="text-center space-y-1.5">
-                  <p className="text-sm font-extrabold text-[#0F172A] tracking-tight">{stepText}</p>
-                  <p className="text-[10px] text-[#64748B] font-semibold">Step {generationStep} of 3</p>
-                </div>
-                <div className="flex gap-1.5 justify-center">
-                  <div className={`w-2 h-2 rounded-full transition-all duration-300 ${generationStep >= 1 ? "bg-indigo-600 scale-110" : "bg-slate-200"}`} />
-                  <div className={`w-2 h-2 rounded-full transition-all duration-300 ${generationStep >= 2 ? "bg-indigo-600 scale-110" : "bg-slate-200"}`} />
-                  <div className={`w-2 h-2 rounded-full transition-all duration-300 ${generationStep >= 3 ? "bg-indigo-600 scale-110" : "bg-slate-200"}`} />
-                </div>
-              </div>
-            ) : (
-              <>
+      {/* Type summary */}
+      {!loadError && (
+        <motion.div variants={staggerContainer} initial="hidden" animate="show"
+          className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          {counts.map((t) => {
+            const Icon = t.icon;
+            const active = filter === t.value;
+            return (
+              <motion.button
+                key={t.value}
+                variants={staggerItem}
+                onClick={() => setFilter(active ? null : t.value)}
+                className={cn(
+                  "rounded-ui-xl border bg-surface p-3 text-left shadow-e1 transition-colors",
+                  active ? "border-brand-line bg-brand-subtle" : "border-line hover:border-line-strong"
+                )}
+              >
                 <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-[#0F172A]">Generate New Document</h2>
-                  <button onClick={() => setShowModal(false)} className="text-[#64748B] hover:text-[#0F172A] cursor-pointer bg-transparent border-0">
-                    <X className="w-5 h-5" />
-                  </button>
+                  <Icon className={cn("h-3.5 w-3.5", active ? "text-brand" : "text-ink-tertiary")} />
+                  <span className="text-lg font-bold tabular-nums text-ink">
+                    {loading ? "—" : t.count}
+                  </span>
                 </div>
+                <p className="mt-1 text-[11px] font-semibold leading-tight text-ink-secondary">{t.label}</p>
+              </motion.button>
+            );
+          })}
+        </motion.div>
+      )}
 
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold text-[#64748B] mb-1.5">Report Title</label>
-                    <input value={newTitle} onChange={e => setNewTitle(e.target.value)}
-                      placeholder="e.g. Failure Investigation – Compressor C-12"
-                      className="w-full px-3.5 py-2 text-xs text-[#0F172A] border border-[#E2E8F0] rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 bg-white transition-all custom-input" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-[#64748B] mb-1.5">Select Report Type</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {REPORT_TYPES.map(t => (
-                        <button key={t.value} onClick={() => setNewType(t.value)}
-                          className="px-3 py-2 rounded-xl text-[11px] font-bold border transition-colors cursor-pointer text-left"
-                          style={newType === t.value
-                            ? { background: `${t.color}10`, borderColor: t.color, color: t.color }
-                            : { background: "#F8FAFC", borderColor: "#E2E8F0", color: "#64748B" }}>
-                          {t.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <button onClick={handleGenerate} disabled={!newTitle.trim() || generating}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer shadow-sm"
-                  >
-                    Generate PDF Report →
-                  </button>
-                </div>
-              </>
+      {/* Library */}
+      <Card>
+        <CardHeader className="flex-col items-stretch gap-2.5 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-2">
+            <CardTitle>Report library</CardTitle>
+            {!loadError && !loading && (
+              <span className="text-[11px] text-ink-tertiary">
+                {visible.length}{filter ? ` of ${reports.length}` : ""}
+              </span>
             )}
           </div>
+          <div className="flex items-center gap-2 sm:ml-auto">
+            {filter && (
+              <Button size="sm" onClick={() => setFilter(null)}>
+                <X className="h-3 w-3" /> Clear filter
+              </Button>
+            )}
+            <div className="relative w-56">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-tertiary" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search reports…"
+                className="w-full rounded-ui-md border border-line bg-canvas py-1.5 pl-8 pr-3 text-xs text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+              />
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="space-y-3 p-5">
+              {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)}
+            </div>
+          ) : loadError ? (
+            <EmptyState
+              icon={AlertTriangle}
+              title="Library unavailable"
+              reason="The reports service couldn't be reached, so your reports can't be listed. This does not mean you have none."
+              action={<Button size="sm" onClick={refresh}>Retry</Button>}
+            />
+          ) : reports.length === 0 ? (
+            <EmptyState
+              icon={FileText}
+              title="No reports yet"
+              reason="Reports are compiled from your uploaded documents — each one cites the sources it drew from."
+              hint="Generate your first report to see it here."
+              action={
+                <Button variant="primary" size="sm" onClick={() => setDialogOpen(true)}>
+                  <Plus className="h-3.5 w-3.5" /> New report
+                </Button>
+              }
+            />
+          ) : visible.length === 0 ? (
+            <EmptyState
+              icon={Search}
+              title="No matching reports"
+              reason="No report matches the current filter or search term."
+              action={<Button size="sm" onClick={() => { setFilter(null); setQuery(""); }}>Reset</Button>}
+            />
+          ) : (
+            <motion.ul variants={staggerContainer} initial="hidden" animate="show" className="divide-y divide-line">
+              {visible.map((r) => {
+                const meta = TYPE_MAP[r.report_type];
+                const Icon = meta?.icon ?? FileText;
+                return (
+                  <motion.li
+                    key={r.id}
+                    variants={staggerItem}
+                    className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-subtle"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-ui-md border border-line bg-subtle">
+                      <Icon className="h-4 w-4 text-ink-secondary" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-bold text-ink" title={r.title}>
+                        {r.title}
+                      </p>
+                      <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary">
+                        <Badge tone={meta?.tone ?? "neutral"}>{r.report_type}</Badge>
+                        <span>Generated {formatDate(r.created_at)}</span>
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => handleDownload(r)}
+                      loading={downloadingId === r.id}
+                    >
+                      <Download className="h-3.5 w-3.5" /> PDF
+                    </Button>
+                  </motion.li>
+                );
+              })}
+            </motion.ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Generate dialog */}
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(o) => { if (!generating) setDialogOpen(o); }}
+        title="Generate report"
+        description="The report is compiled from your uploaded documents. If nothing relevant is found, it will say so rather than invent content."
+        footer={
+          <>
+            <Button size="sm" onClick={() => setDialogOpen(false)} disabled={generating}>Cancel</Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handleGenerate}
+              loading={generating}
+              disabled={!newTitle.trim()}
+            >
+              Generate
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div>
+            <label htmlFor="report-title" className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-ink-tertiary">
+              Title
+            </label>
+            <input
+              id="report-title"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="e.g. Q3 compressor failure review"
+              className="w-full rounded-ui-md border border-line bg-canvas px-3 py-2 text-[13px] text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+            />
+          </div>
+          <div>
+            <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-ink-tertiary">Type</p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {REPORT_TYPES.map((t) => {
+                const Icon = t.icon;
+                const active = newType === t.value;
+                return (
+                  <button
+                    key={t.value}
+                    onClick={() => setNewType(t.value)}
+                    className={cn(
+                      "flex items-center gap-2 rounded-ui-md border px-2.5 py-2 text-left transition-colors",
+                      active
+                        ? "border-brand-line bg-brand-subtle text-brand"
+                        : "border-line bg-surface text-ink-secondary hover:bg-subtle"
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="text-[11px] font-semibold leading-tight">{t.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
-      )}
-    </div>
+      </Dialog>
+    </PageTransition>
   );
 }

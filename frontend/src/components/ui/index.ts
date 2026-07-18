@@ -5,4 +5,6 @@ export { Badge, StatusDot, type Tone } from "./Badge";
 export { Skeleton, SkeletonKpi, SkeletonRow } from "./Skeleton";
 export { EmptyState } from "./EmptyState";
 export { Dialog } from "./Dialog";
+export { AiGeneratedBadge, ConfidenceBadge, EvidenceBadge, SourceBadge } from "./AiBadges";
 export { KpiTile, type KpiTileProps } from "./KpiTile";
+export { Avatar, initialsFrom, type AvatarProps } from "./Avatar";

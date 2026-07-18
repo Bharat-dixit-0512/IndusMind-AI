@@ -184,7 +184,7 @@ export default function DashboardPage() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-ink">
+          <h1 className="t-page text-ink">
             Welcome back, {firstName}
           </h1>
           <p className="mt-0.5 flex items-center gap-1.5 text-xs text-ink-secondary">

@@ -1,603 +1,438 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
+import { animate, motion, useReducedMotion } from "framer-motion";
+import {
+  AlertTriangle, Brain, Eye, EyeOff, FileCheck2, FileText, Lock, Mail,
+  Network, ShieldCheck, Sparkles, User, Wrench,
+} from "lucide-react";
+
 import { useAuth } from "@/context/AuthContext";
-import { Eye, EyeOff, Zap, Shield, Brain, Activity, HelpCircle, Mail, Lock, User } from "lucide-react";
-import LoginLoader from "@/components/loaders/LoginLoader";
+import { EASE } from "@/components/motion/variants";
+import { Button } from "@/components/ui";
+import { cn } from "@/lib/utils";
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Every figure on this page is a verifiable property of the product, not a
+   usage or accuracy metric. "10,000+ documents indexed" and "98.6% retrieval
+   accuracy" would be invented — there is no such benchmark and the corpus is
+   whatever the customer uploads. A platform that markets itself on never
+   fabricating cannot open with fabricated numbers, so these count real,
+   checkable capabilities instead.
+   ───────────────────────────────────────────────────────────────────────── */
+const STATS: { value: number; suffix?: string; label: string }[] = [
+  { value: 100, suffix: "%", label: "Source-grounded answers" },
+  { value: 3, label: "Retrieval methods combined" },
+  { value: 5, label: "Grounded report types" },
+  { value: 7, label: "Intelligence modules" },
+];
+
+const CAPABILITIES = [
+  { icon: Network, title: "Knowledge graph", desc: "Entities and relationships extracted from your files.", float: [0, -9, 0], dur: 9 },
+  { icon: Wrench, title: "Maintenance", desc: "Evidence-based RCA from real maintenance history.", float: [0, 8, 0], dur: 11 },
+  { icon: ShieldCheck, title: "Compliance", desc: "Checked against standards your documents reference.", float: [0, -7, 0], dur: 12 },
+  { icon: FileText, title: "Grounded reports", desc: "PDFs that cite the evidence behind every finding.", float: [0, 9, 0], dur: 10 },
+];
+
+/* Trust markers describe how the system works. "GDPR Ready" is deliberately
+   absent — that is a regulatory assertion nobody has verified for this build. */
+const TRUST = [
+  { icon: Lock, label: "Role-based access" },
+  { icon: FileCheck2, label: "Source-verified answers" },
+  { icon: ShieldCheck, label: "Self-hosted processing" },
+];
+
+const ROLES = ["ENGINEER", "INSPECTOR", "ADMIN"] as const;
+
+/**
+ * Counts up to `value`, then holds it.
+ *
+ * Driven by React state rather than a MotionValue rendered as a motion child:
+ * that approach server-renders the *initial* number as static text, and after
+ * hydration the subscription does not reliably re-attach — leaving a permanent
+ * "0" on screen. State also initialises to the real figure, so if the animation
+ * never runs the correct number is shown rather than a stale zero, and the
+ * cleanup snaps back so a stopped animation cannot strand a half-counted value.
+ */
+function StatNumber({ value }: { value: number }) {
+  const reduce = useReducedMotion();
+  const [shown, setShown] = useState(value);
+
+  useEffect(() => {
+    if (reduce) return; // state already holds the true figure
+    const controls = animate(0, value, {
+      duration: 1.1,
+      ease: EASE,
+      onUpdate: (v) => setShown(Math.round(v)),
+      onComplete: () => setShown(value),
+    });
+    return () => { controls.stop(); setShown(value); };
+  }, [value, reduce]);
+
+  return <>{shown}</>;
+}
 
 export default function HomePage() {
   const { login, register, token, isLoading } = useAuth();
   const router = useRouter();
-  
-  // If user is already authenticated, redirect straight to dashboard
-  useEffect(() => {
-    if (!isLoading && token) {
-      router.replace("/dashboard");
-    }
-  }, [token, isLoading, router]);
 
   const [mode, setMode] = useState<"login" | "register">("login");
   const [form, setForm] = useState({ email: "", password: "", full_name: "", role: "ENGINEER" });
+  const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showPwd, setShowPwd] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
 
-  const [activeFeature, setActiveFeature] = useState(0);
-  const [tilt, setTilt] = useState({ x: 0, y: 0 });
-  const [leftHovered, setLeftHovered] = useState(false);
-  const [cardHeight, setCardHeight] = useState<number | undefined>(undefined);
-  const [focusedInput, setFocusedInput] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isLoading && token) router.replace("/dashboard");
+  }, [token, isLoading, router]);
 
-  const loginRef = useRef<HTMLDivElement>(null);
-  const registerRef = useRef<HTMLDivElement>(null);
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
-
-  const handleSubmit = async (e: React.FormEvent, submitMode: "login" | "register") => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      if (submitMode === "login") {
+      if (mode === "login") {
         await login({ email: form.email, password: form.password });
       } else {
-        await register({ email: form.email, password: form.password, full_name: form.full_name, role: form.role });
+        await register({
+          email: form.email, password: form.password,
+          full_name: form.full_name, role: form.role,
+        });
       }
-    } catch (err: unknown) {
+    } catch (err) {
       setError(err instanceof Error ? err.message : "Authentication failed");
     } finally {
       setLoading(false);
     }
   };
 
-  const features = [
-    { icon: Brain, label: "AI Knowledge RAG", desc: "Query safety logs, audit history, and checklists with clear citations" },
-    { icon: Activity, label: "Predictive Maintenance", desc: "Machine logs parsed automatically into MTTR/MTBF analytics dashboards" },
-    { icon: Shield, label: "Regulatory Compliance", desc: "Scan and compare plant records against PESO, OISD, and Factory Acts" },
-    { icon: Zap, label: "Live Knowledge Graph", desc: "Visualize connections between SOPs, failures, parts, and assets" },
-  ];
-
-  // Rotate features every 4 seconds
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setActiveFeature(prev => (prev + 1) % features.length);
-    }, 4000);
-    return () => clearInterval(timer);
-  }, [features.length]);
-
-  // Adjust container height dynamically on mode/form updates
-  useEffect(() => {
-    const activeEl = mode === "login" ? loginRef.current : registerRef.current;
-    if (activeEl) {
-      setCardHeight(activeEl.offsetHeight);
-    }
-  }, [mode, form]);
-
-  // Generate lightweight random points for a denser pseudo-3D Knowledge Graph
-  const { networkNodes, networkLines } = useMemo(() => {
-    const nodes = [];
-    const seedRandom = (i: number) => Math.sin(i * 9876.5432) * 0.5 + 0.5;
-    // Denser network with 26 nodes
-    for (let i = 0; i < 26; i++) {
-      nodes.push({
-        id: i,
-        x: seedRandom(i * 3) * 90 + 5,       // Spread from 5% to 95%
-        y: seedRandom(i * 3 + 1) * 90 + 5,
-        size: seedRandom(i * 3 + 2) * 5 + 3,  // sizes 3px to 8px
-        color: i % 3 === 0 ? "#6366F1" : i % 3 === 1 ? "#6366F1" : "#06B6D4",
-        depth: seedRandom(i * 3 + 3) * 80 - 40, // depth from -40px to +40px for 3D parallax parallax
-      });
-    }
-
-    const lines = [];
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = nodes[i].x - nodes[j].x;
-        const dy = nodes[i].y - nodes[j].y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 28) { // connect nodes close to each other
-          lines.push({ id: `${i}-${j}`, from: nodes[i], to: nodes[j] });
-        }
-      }
-    }
-    return { networkNodes: nodes, networkLines: lines };
-  }, []);
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    setLeftHovered(true);
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) - 0.5; // -0.5 to 0.5
-    const y = ((e.clientY - rect.top) / rect.height) - 0.5; // -0.5 to 0.5
-    setTilt({ x, y });
-  };
-
-  const handleMouseLeave = () => {
-    setLeftHovered(false);
-    setTilt({ x: 0, y: 0 }); // reset tilt
-  };
-
-  const handleButtonMouseMove = (e: React.MouseEvent<HTMLButtonElement>) => {
-    const button = e.currentTarget;
-    const rect = button.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    button.style.setProperty("--x", `${x}px`);
-    button.style.setProperty("--y", `${y}px`);
-  };
-
-  const rotateY = leftHovered ? (4 - (tilt.x + 0.5) * 6) : 4;
-  const rotateX = leftHovered ? (tilt.y * 8) : 0;
+  const isRegister = mode === "register";
+  // 100ms cascade: logo → headline → sub → stats → cards → trust → login card.
+  const step = (i: number) => ({
+    initial: { opacity: 0, y: 16 },
+    animate: { opacity: 1, y: 0 },
+    transition: { duration: 0.45, delay: i * 0.1, ease: EASE },
+  });
 
   return (
-    <>
-      {/* Premium login authentication overlay */}
-      {loading && <LoginLoader />}
+    <div className="relative flex min-h-screen overflow-hidden bg-canvas">
+      {/* ── Photographic backdrop ──
+          Small copy over this uses ink-secondary, never ink-tertiary: the
+          tertiary token is ~2.6:1 on plain white and cannot reach AA at 11px
+          no matter how strong the scrim is.
+          The render is decorative, so it carries an empty alt and is hidden from
+          assistive tech. The scrim above it is not optional styling: body copy
+          sits on top, and unveiled the image drops text contrast below AA. It is
+          weighted left (where the hero copy sits) and lighter through the middle
+          so the graph render still reads. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 z-0">
+        <Image
+          src="/login-backdrop.png"
+          alt=""
+          fill
+          priority
+          sizes="100vw"
+          className="object-cover object-center"
+        />
+        <div className="absolute inset-0 bg-gradient-to-r from-white/96 via-white/72 to-white/88" />
+        <div className="absolute inset-0 bg-gradient-to-b from-white/55 via-white/20 to-white/72" />
+      </div>
 
-      <div className="min-h-screen flex bg-[#F4F6FB]">
+      {/* ── Brand mark ──
+          Anchored to the page rather than sitting in the hero column: the column
+          is vertically centred, which dragged the logo down to the middle of the
+          screen. A brand mark belongs in the corner. */}
+      <motion.div
+        {...step(0)}
+        // Insets track the container padding at each breakpoint (px-5 / px-10).
+        className="absolute left-5 top-6 z-20 flex items-center gap-2.5 lg:left-10 lg:top-8"
+      >
+        <div className="flex h-9 w-9 items-center justify-center rounded-ui-md bg-brand shadow-[0_8px_20px_-6px_rgba(91,94,247,0.6)]">
+          <Brain className="h-5 w-5 text-white" />
+        </div>
+        <div>
+          <p className="text-sm font-bold leading-tight text-ink">IndusMind</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-ink/70">
+            Industrial Knowledge Intelligence
+          </p>
+        </div>
+      </motion.div>
 
-        {/* Left panel - branding */}
-        <div
-          onMouseMove={handleMouseMove}
-          onMouseLeave={handleMouseLeave}
-          className="hidden lg:flex flex-1 flex-col justify-center px-16 py-12 relative overflow-hidden bg-[#F4F6FB] border-r  border-none"
+      {/* ── Left hero ── */}
+      <aside className="relative z-10 hidden w-1/2 flex-col justify-center gap-6 px-10 py-8 lg:flex xl:w-[55%]">
+        {/* The backdrop render is itself an isometric knowledge graph, so the
+            hand-built <IndustrialAiScene /> that used to sit here would put a
+            second graph on the same screen. The photo carries that motif now. */}
+
+        <div className="max-w-xl">
+          <motion.h1 {...step(2)} className="text-[30px] font-bold leading-[1.15] tracking-tight text-ink">
+            Turn industrial documents into answers you can defend.
+          </motion.h1>
+          <motion.p {...step(3)} className="mt-2.5 max-w-lg text-[14px] leading-relaxed text-ink/80">
+            SOPs, maintenance logs, inspections and audits become a queryable knowledge base —
+            every answer cites the document it came from.
+          </motion.p>
+
+          {/* Verifiable capability stats */}
+          <motion.ul {...step(4)} className="mt-5 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
+            {STATS.map((s) => (
+              <li key={s.label}>
+                <p className="text-[24px] font-bold leading-none tracking-tight text-ink">
+                  <StatNumber value={s.value} />
+                  {s.suffix}
+                </p>
+                <p className="mt-1 text-[11px] font-semibold leading-snug text-ink/75">{s.label}</p>
+              </li>
+            ))}
+          </motion.ul>
+
+          {/* Floating glass capability cards */}
+          <motion.ul {...step(5)} className="mt-5 grid grid-cols-2 gap-2.5">
+            {CAPABILITIES.map((c) => {
+              const Icon = c.icon;
+              return (
+                <motion.li
+                  key={c.title}
+                  animate={{ y: c.float }}
+                  transition={{ duration: c.dur, repeat: Infinity, ease: "easeInOut" }}
+                  whileHover={{ y: -6, transition: { duration: 0.2, ease: EASE } }}
+                  className={cn(
+                    "group rounded-ui-xl border border-white/60 bg-white/85 p-3 backdrop-blur-md",
+                    "shadow-[0_8px_30px_rgba(15,23,42,0.06)] transition-shadow duration-200",
+                    "hover:shadow-[0_14px_40px_rgba(91,94,247,0.14)]"
+                  )}
+                >
+                  <span className="inline-flex rounded-ui-sm bg-brand-subtle p-1.5 text-brand transition-transform duration-300 group-hover:rotate-6">
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <p className="mt-2 text-xs font-bold text-ink">{c.title}</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-ink-secondary">{c.desc}</p>
+                </motion.li>
+              );
+            })}
+          </motion.ul>
+        </div>
+
+        <motion.ul {...step(6)} className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-2">
+          {TRUST.map((t) => {
+            const Icon = t.icon;
+            return (
+              <li key={t.label} className="flex items-center gap-1.5 text-[11px] font-semibold text-ink/75">
+                <Icon className="h-3 w-3" /> {t.label}
+              </li>
+            );
+          })}
+        </motion.ul>
+      </aside>
+
+      {/* ── Right: auth ── */}
+      <main className="relative z-10 flex flex-1 items-center justify-center px-5 py-10">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: [20, 0, 0] }}
+          transition={{ duration: 0.5, delay: 0.5, ease: EASE }}
+          className="w-full max-w-[400px]"
         >
-          {/* Dense Cybernetic background network grid */}
-          <div className="absolute inset-0 z-0 pointer-events-none">
-            {/* Grid Pattern */}
-            <svg className="absolute inset-0 w-full h-full opacity-40 pointer-events-none z-0" xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                  <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(15,23,42,0.03)" strokeWidth="1" />
-                </pattern>
-              </defs>
-              <rect width="100%" height="100%" fill="url(#grid)" />
-            </svg>
-
-            {/* Radar Sweep Grid Overlay */}
-            <div className="absolute inset-0 z-0 pointer-events-none opacity-[0.25] flex items-center justify-center scale-150">
-              <div className="w-[850px] h-[850px] rounded-full radar-grid" />
+          <motion.div
+            // Gentle float, 6s — the card breathes rather than sits.
+            animate={{ y: [0, -6, 0] }}
+            transition={{ duration: 6, repeat: Infinity, ease: "easeInOut", delay: 1 }}
+            className={cn(
+              "rounded-ui-xl border border-white/60 bg-white/85 p-7 backdrop-blur-xl",
+              "shadow-[0_20px_60px_-12px_rgba(15,23,42,0.16)]"
+            )}
+          >
+            {/* Small animated AI mark above the form */}
+            <div className="mb-5 flex items-center gap-3">
+              <motion.div
+                animate={{ boxShadow: [
+                  "0 8px 24px -8px rgba(91,94,247,0.45)",
+                  "0 10px 30px -6px rgba(139,92,246,0.6)",
+                  "0 8px 24px -8px rgba(91,94,247,0.45)",
+                ] }}
+                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+                className="flex h-10 w-10 items-center justify-center rounded-ui-md bg-gradient-to-br from-brand to-ai-solid"
+              >
+                <Sparkles className="h-5 w-5 text-white" />
+              </motion.div>
+              <div>
+                <h2 className="text-card font-bold leading-tight text-ink">
+                  {isRegister ? "Create your account" : "Welcome back"}
+                </h2>
+                <p className="text-[11px] text-ink-tertiary">
+                  {isRegister ? "Set up workspace access" : "Sign in to your workspace"}
+                </p>
+              </div>
             </div>
 
-            {/* 3D tilt background network */}
-            <div
-              className="absolute inset-0 transition-transform duration-350 ease-out pointer-events-none"
-              style={{
-                transform: `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
-                willChange: "transform",
-                transformStyle: "preserve-3d",
-                backfaceVisibility: "hidden",
-                WebkitBackfaceVisibility: "hidden",
-                outline: "1px solid transparent"
-              }}
-            >
-              <svg className="w-full h-full absolute inset-0 opacity-[0.22]">
-                {networkLines.map(line => (
-                  <line
-                    key={line.id}
-                    x1={`${line.from.x}%`}
-                    y1={`${line.from.y}%`}
-                    x2={`${line.to.x}%`}
-                    y2={`${line.to.y}%`}
-                    stroke="rgba(99, 102, 241, 0.25)"
-                    strokeWidth="0.75"
-                  />
-                ))}
-              </svg>
-              {networkNodes.map(node => (
-                <div
-                  key={node.id}
-                  className="absolute rounded-full animate-pulse"
-                  style={{
-                    left: `${node.x}%`,
-                    top: `${node.y}%`,
-                    width: `${node.size}px`,
-                    height: `${node.size}px`,
-                    backgroundColor: node.color,
-                    boxShadow: `0 0 12px ${node.color}`,
-                    transform: `translate3d(-50%, -50%, ${node.depth}px)`,
-                  }}
-                />
+            {/* Mode switch */}
+            <div className="grid grid-cols-2 gap-1 rounded-ui-md border border-line bg-subtle/80 p-1">
+              {(["login", "register"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setMode(m); setError(""); }}
+                  className={cn(
+                    "rounded-ui-sm py-1.5 text-xs font-semibold transition-all",
+                    mode === m ? "bg-surface text-ink shadow-e1" : "text-ink-tertiary hover:text-ink"
+                  )}
+                >
+                  {m === "login" ? "Sign in" : "Register"}
+                </button>
               ))}
             </div>
-          </div>
 
-          {/* Interactive 3D Perspective Shift Parent Wrapper */}
-          <div
-            className="relative z-10 transition-transform duration-500 ease-out"
-            style={{
-              transform: `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
-              transformStyle: "preserve-3d",
-              willChange: "transform",
-              backfaceVisibility: "hidden",
-              WebkitBackfaceVisibility: "hidden",
-              outline: "1px solid transparent"
-            }}
-          >
-            {/* Logo */}
-            <div className="flex items-center gap-3 mb-8">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-gradient-to-br from-[#4F46E5] to-[#6366F1]">
-                <Brain className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <p className="text-sm font-extrabold text-[#0F172A] leading-tight">IndusMind AI</p>
-                <p className="text-[10px] text-indigo-600 font-extrabold uppercase tracking-wider">Industrial Knowledge Platform</p>
-              </div>
-            </div>
-
-            {/* Header copy */}
-            <h1 className="text-4xl font-extrabold text-[#0F172A] leading-tight mb-4">
-              Unified Plant<br />
-              <span className="bg-gradient-to-r from-indigo-600 to-cyan-500 bg-clip-text text-transparent">
-                Knowledge Intelligence
-              </span>
-            </h1>
-            <p className="text-xs font-semibold text-[#64748B] mb-8 max-w-md leading-relaxed">
-              Harness institutional knowledge, SOP requirements, and regulatory audit history through a secure, enterprise-grade industrial AI assistant.
-            </p>
-
-            {/* Connected Node Feature List (All 4 stacked) */}
-            <div className="relative flex flex-col gap-4 max-w-lg z-10 pl-6">
-              
-              {/* Connection Trace Line */}
-              <div className="absolute left-[39px] top-6 bottom-6 w-[2px] bg-slate-200/50 z-0">
-                {/* Glowing Pulse Dot */}
-                <div
-                  className="absolute w-[6px] h-12 -left-[2px] bg-gradient-to-b from-transparent via-indigo-600 to-transparent shadow-[0_0_10px_#4F46E5] rounded-full transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
-                  style={{
-                    top: `${activeFeature * 25 + 12}%`,
-                    transform: "translateY(-50%)"
-                  }}
-                />
-              </div>
-
-              {features.map((feat, idx) => {
-                const active = idx === activeFeature;
-                const Icon = feat.icon;
-                return (
-                  <div
-                    key={feat.label}
-                    onClick={() => setActiveFeature(idx)}
-                    className={`relative flex items-start gap-4 p-5 rounded-2xl cursor-pointer transition-all duration-500 transform overflow-hidden z-10 ${
-                      active
-                        ? "bg-white/95 border border-slate-200 shadow-[0_10px_30px_-10px_rgba(79, 70, 229,0.08)] scale-[1.03] border-l-4 border-l-indigo-600 pointer-events-auto"
-                        : "bg-white/40 border border-slate-100/40 opacity-45 scale-[0.97] blur-[0.5px] shadow-none pointer-events-auto hover:opacity-75 hover:scale-[0.99] hover:blur-0 transition-all duration-300"
-                    }`}
-                  >
-                    {/* Icon container */}
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 border transition-all duration-300 ${
-                      active
-                        ? "bg-indigo-50 border-indigo-100 shadow-sm"
-                        : "bg-slate-50/50 border-slate-100"
-                    }`}>
-                      <Icon className={`w-5 h-5 transition-colors duration-300 ${active ? "text-indigo-600" : "text-slate-400"}`} />
-                    </div>
-
-                    <div>
-                      <p className={`text-sm font-bold transition-colors duration-300 ${active ? "text-[#0F172A]" : "text-[#64748B]"}`}>{feat.label}</p>
-                      <p className="text-xs text-[#64748B] font-semibold mt-1 leading-relaxed">{feat.desc}</p>
-                    </div>
-
-                    {/* Active card progress bar */}
-                    {active && (
-                      <div className="absolute bottom-0 inset-x-0 h-[3px] bg-slate-100 rounded-b-2xl overflow-hidden">
-                        <div
-                          key={idx} // Reset animation key
-                          className="h-full bg-gradient-to-r from-indigo-600 to-cyan-500 rounded-full"
-                          style={{
-                            animation: "progress-sweep 4s linear forwards",
-                          }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Micro-telemetry widget at the bottom left */}
-          <div className="absolute bottom-6 left-16 z-20 flex items-center gap-4 bg-white/70 backdrop-blur-md border border-slate-200/80 rounded-xl px-4 py-2 text-[10px] text-[#64748B] font-bold shadow-sm select-none">
-            <span className="flex h-2 w-2 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-            </span>
-            <span>Cluster Status: <span className="text-[#0F172A]">Active</span></span>
-            <span className="text-slate-300">|</span>
-            <span>Uptime: <span className="text-indigo-600">99.98%</span></span>
-            <span className="text-slate-300">|</span>
-            <span>Latency: <span className="text-emerald-600">12ms</span></span>
-          </div>
-        </div>
-
-        {/* Right panel - Auth form */}
-        <div className="flex flex-1 items-center justify-center px-6 py-12 lg:px-12 bg-[#F4F6FB] z-10">
-          <div className="w-full max-w-md">
-
-            {/* Logo on mobile */}
-            <div className="lg:hidden flex items-center gap-3 mb-8">
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-gradient-to-br from-[#4F46E5] to-[#6366F1]">
-                <Brain className="w-5 h-5 text-white" />
-              </div>
-              <span className="text-xl font-bold text-[#0F172A]">IndusMind AI</span>
-            </div>
-
-            <div className="group bg-white border rounded-2xl p-8 relative overflow-hidden transition-all duration-500 hover:border-indigo-500/50 hover:shadow-[0_30px_60px_-15px_rgba(15,23,42,0.08),_0_0_50px_-10px_rgba(79, 70, 229,0.03)]"
-              style={{ border: "1px solid rgba(226, 232, 240, 0.8)", boxShadow: "0 20px 40px rgba(15, 23, 42, 0.04)" }}>
-              {/* Subtle hover grid */}
-              <div className="absolute inset-0 cyber-card-grid opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none rounded-2xl" />
-
-              <h2 className="relative z-10 text-2xl font-bold text-[#0F172A] mb-1">
-                {mode === "login" ? "Enterprise Login" : "Create Account"}
-              </h2>
-              <p className="relative z-10 text-xs text-[#64748B] mb-6">
-                {mode === "login" ? "Sign in to access the plant intelligence platform" : "Register to access the industrial platform"}
-              </p>
-
-              {/* Mode tabs */}
-              <div className="relative flex rounded-lg p-1 mb-6 bg-[#F1F5F9] z-10">
-                {/* Sliding tab background pill */}
-                <div
-                  className="absolute top-1 bottom-1 left-1 rounded-md bg-white border border-slate-100 shadow-sm transition-all duration-400 ease-[cubic-bezier(0.25,1,0.5,1)]"
-                  style={{
-                    width: "calc(50% - 4px)",
-                    transform: mode === "login" ? "translateX(0%)" : "translateX(100%)",
-                  }}
-                />
-                {(["login", "register"] as const).map(m => (
-                  <button key={m} type="button" onClick={() => { setMode(m); setError(""); }}
-                    className="relative z-10 flex-1 py-1.5 rounded-md text-xs transition-all duration-300 cursor-pointer bg-transparent border-0 text-center"
-                    style={{
-                      color: mode === m ? "#0F172A" : "#94A3B8",
-                      fontWeight: mode === m ? "800" : "600"
-                    }}>
-                    {m === "login" ? "Sign In" : "Register"}
+            <form onSubmit={handleSubmit} className="mt-5 space-y-3.5">
+              {isRegister && (
+                <FloatField id="name" label="Full name" icon={User} value={form.full_name}
+                  onChange={set("full_name")} required autoComplete="name" />
+              )}
+              <FloatField id="email" label="Email" icon={Mail} type="email" value={form.email}
+                onChange={set("email")} required autoComplete="email" />
+              <FloatField
+                id="password" label="Password" icon={Lock}
+                type={showPwd ? "text" : "password"} value={form.password}
+                onChange={set("password")} required
+                autoComplete={isRegister ? "new-password" : "current-password"}
+                trailing={
+                  <button type="button" onClick={() => setShowPwd((s) => !s)}
+                    aria-label={showPwd ? "Hide password" : "Show password"}
+                    className="p-1 text-ink-tertiary transition-colors hover:text-brand">
+                    {showPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                   </button>
-                ))}
-              </div>
+                }
+              />
 
-              {/* Dynamic height sliding forms container wrapper */}
-              <div
-                className="relative transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden"
-                style={{ height: cardHeight ? `${cardHeight}px` : "auto" }}
-              >
-                <div
-                  className="w-[200%] flex transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
-                  style={{ transform: mode === "login" ? "translateX(0%)" : "translateX(-50%)" }}
-                >
-                  {/* SIGN IN FORM PANEL */}
-                  <div ref={loginRef} className="w-1/2 pr-4 pl-1 flex-shrink-0">
-                    <form onSubmit={(e) => handleSubmit(e, "login")} className="space-y-4">
-                      <div>
-                        <label className="block text-xs font-bold text-[#64748B] mb-1">Email Address</label>
-                        <div className="relative">
-                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-all duration-300">
-                            <Mail className={`w-4 h-4 transition-all duration-300 ${
-                              focusedInput === "login-email" ? "text-indigo-600 scale-110" : "text-slate-400"
-                            }`} />
-                          </div>
-                          <input
-                            type="email"
-                            value={form.email}
-                            onChange={e => set("email", e.target.value)}
-                            onFocus={() => setFocusedInput("login-email")}
-                            onBlur={() => setFocusedInput(null)}
-                            required
-                            placeholder="you@company.com"
-                            className="w-full pl-9 pr-3.5 py-2 text-xs text-[#0F172A] border border-[#E2E8F0] rounded-xl outline-none focus:border-indigo-500 focus:shadow-[0_0_12px_rgba(79, 70, 229,0.12)] bg-white transition-all duration-300"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between items-center mb-1">
-                          <label className="block text-xs font-bold text-[#64748B]">Password</label>
-                          <button type="button" className="text-[10px] text-indigo-600 font-semibold hover:underline cursor-pointer bg-transparent border-0">
-                            Forgot Password?
-                          </button>
-                        </div>
-                        <div className="relative">
-                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-all duration-300">
-                            <Lock className={`w-4 h-4 transition-all duration-300 ${
-                              focusedInput === "login-pwd" ? "text-indigo-600 scale-110" : "text-slate-400"
-                            }`} />
-                          </div>
-                          <input
-                            type={showPwd ? "text" : "password"}
-                            value={form.password}
-                            onChange={e => set("password", e.target.value)}
-                            onFocus={() => setFocusedInput("login-pwd")}
-                            onBlur={() => setFocusedInput(null)}
-                            required
-                            placeholder="••••••••"
-                            className="w-full pl-9 pr-10 py-2 text-xs text-[#0F172A] border border-[#E2E8F0] rounded-xl outline-none focus:border-indigo-500 focus:shadow-[0_0_12px_rgba(79, 70, 229,0.12)] bg-white transition-all duration-300"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowPwd(s => !s)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-[#64748B] hover:scale-110 hover:opacity-100 transition-all cursor-pointer bg-transparent border-0"
-                          >
-                            {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          id="remember"
-                          checked={rememberMe}
-                          onChange={e => setRememberMe(e.target.checked)}
-                          className="w-3.5 h-3.5 rounded border-[#E2E8F0] text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                        />
-                        <label htmlFor="remember" className="text-[11px] text-[#64748B] font-semibold cursor-pointer select-none">
-                          Remember Me
-                        </label>
-                      </div>
-
-                      {error && (
-                        <div className="px-3.5 py-2.5 rounded-xl text-xs text-red-700 font-semibold border border-red-200" style={{ background: "rgba(220,38,38,0.05)" }}>
-                          {error}
-                        </div>
-                      )}
-
-                      <button
-                        type="submit"
-                        disabled={loading}
-                        onMouseMove={handleButtonMouseMove}
-                        className="shimmer-btn w-full py-2.5 rounded-xl text-xs font-bold text-white transition-all disabled:opacity-60 cursor-pointer mt-2 relative overflow-hidden active:scale-[0.98] border-0"
-                        style={{
-                          background: "radial-gradient(circle 80px at var(--x, 50%) var(--y, 50%), rgba(255,255,255,0.18), transparent), linear-gradient(135deg, #4F46E5, #6366F1)",
-                          boxShadow: "0 4px 12px rgba(79, 70, 229,0.2)"
-                        }}
-                      >
-                        {loading ? "Authenticating…" : "Sign In →"}
+              {isRegister && (
+                <div>
+                  <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-ink-tertiary">Role</p>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {ROLES.map((r) => (
+                      <button key={r} type="button" onClick={() => setForm((f) => ({ ...f, role: r }))}
+                        className={cn(
+                          "rounded-ui-md border py-1.5 text-[11px] font-semibold transition-all",
+                          form.role === r
+                            ? "border-brand-line bg-brand-subtle text-brand shadow-e1"
+                            : "border-line bg-surface text-ink-secondary hover:bg-subtle"
+                        )}>
+                        {r.charAt(0) + r.slice(1).toLowerCase()}
                       </button>
-                    </form>
-
-                    {/* Telemetry secure authorization chip */}
-                    <div className="mt-6 p-4 px-1 bg-white border-0 rounded-xl relative overflow-hidden shadow-none">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-1.5 text-[9px] text-slate-500 font-bold uppercase tracking-wider">
-                          <Shield className="w-3.5 h-3.5 text-indigo-600" />
-                          <span>Secure Authorization Key</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-[9px] text-emerald-600 font-bold uppercase">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          <span>MOCK_CLUSTER: READY</span>
-                        </div>
-                      </div>
-                      <p className="text-[10px] text-slate-500 leading-relaxed font-semibold">
-                        Demo Credentials:<br />
-                        <span className="inline-block mt-2.5">Email: <span className="bg-[#F8FAFC] text-indigo-600 border border-slate-200 font-mono px-2 py-0.5 rounded text-[10px] select-all">admin@industrial.ai</span></span><br />
-                        <span className="inline-block mt-2">Password: <span className="bg-[#F8FAFC] text-indigo-600 border border-slate-200 font-mono px-2 py-0.5 rounded text-[10px] select-all">adminpassword123</span></span>
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* REGISTER FORM PANEL */}
-                  <div ref={registerRef} className="w-1/2 pl-4 pr-1 flex-shrink-0">
-                    <form onSubmit={(e) => handleSubmit(e, "register")} className="space-y-4">
-                      <div>
-                        <label className="block text-xs font-bold text-[#64748B] mb-1">Full Name</label>
-                        <div className="relative">
-                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-all duration-300">
-                            <User className={`w-4 h-4 transition-all duration-300 ${
-                              focusedInput === "register-name" ? "text-indigo-600 scale-110" : "text-slate-400"
-                            }`} />
-                          </div>
-                          <input
-                            value={form.full_name}
-                            onChange={e => set("full_name", e.target.value)}
-                            onFocus={() => setFocusedInput("register-name")}
-                            onBlur={() => setFocusedInput(null)}
-                            required={mode === "register"}
-                            placeholder="Elena Rostova"
-                            className="w-full pl-9 pr-3.5 py-2 text-xs text-[#0F172A] border border-[#E2E8F0] rounded-xl outline-none focus:border-indigo-500 focus:shadow-[0_0_12px_rgba(79, 70, 229,0.12)] bg-white transition-all duration-300"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-[#64748B] mb-1">Email Address</label>
-                        <div className="relative">
-                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-all duration-300">
-                            <Mail className={`w-4 h-4 transition-all duration-300 ${
-                              focusedInput === "register-email" ? "text-indigo-600 scale-110" : "text-slate-400"
-                            }`} />
-                          </div>
-                          <input
-                            type="email"
-                            value={form.email}
-                            onChange={e => set("email", e.target.value)}
-                            onFocus={() => setFocusedInput("register-email")}
-                            onBlur={() => setFocusedInput(null)}
-                            required
-                            placeholder="you@company.com"
-                            className="w-full pl-9 pr-3.5 py-2 text-xs text-[#0F172A] border border-[#E2E8F0] rounded-xl outline-none focus:border-indigo-500 focus:shadow-[0_0_12px_rgba(79, 70, 229,0.12)] bg-white transition-all duration-300"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-[#64748B] mb-1">Password</label>
-                        <div className="relative">
-                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-all duration-300">
-                            <Lock className={`w-4 h-4 transition-all duration-300 ${
-                              focusedInput === "register-pwd" ? "text-indigo-600 scale-110" : "text-slate-400"
-                            }`} />
-                          </div>
-                          <input
-                            type={showPwd ? "text" : "password"}
-                            value={form.password}
-                            onChange={e => set("password", e.target.value)}
-                            onFocus={() => setFocusedInput("register-pwd")}
-                            onBlur={() => setFocusedInput(null)}
-                            required
-                            placeholder="••••••••"
-                            className="w-full pl-9 pr-10 py-2 text-xs text-[#0F172A] border border-[#E2E8F0] rounded-xl outline-none focus:border-indigo-500 focus:shadow-[0_0_12px_rgba(79, 70, 229,0.12)] bg-white transition-all duration-300"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowPwd(s => !s)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-[#64748B] hover:scale-110 hover:opacity-100 transition-all cursor-pointer bg-transparent border-0"
-                          >
-                            {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-[#64748B] mb-1">Role</label>
-                        <div className="relative">
-                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-all duration-300">
-                            <Shield className={`w-4 h-4 transition-all duration-300 ${
-                              focusedInput === "register-role" ? "text-indigo-600 scale-110" : "text-slate-400"
-                            }`} />
-                          </div>
-                          <select
-                            value={form.role}
-                            onChange={e => set("role", e.target.value)}
-                            onFocus={() => setFocusedInput("register-role")}
-                            onBlur={() => setFocusedInput(null)}
-                            className="w-full pl-9 pr-3 py-2 text-xs text-[#0F172A] border border-[#E2E8F0] rounded-xl outline-none bg-white focus:border-indigo-500 focus:shadow-[0_0_12px_rgba(79, 70, 229,0.12)] transition-all duration-300"
-                          >
-                            <option value="ENGINEER">Engineer</option>
-                            <option value="INSPECTOR">Inspector</option>
-                            <option value="ADMIN">Administrator</option>
-                          </select>
-                        </div>
-                      </div>
-
-                      {error && (
-                        <div className="px-3.5 py-2.5 rounded-xl text-xs text-red-700 font-semibold border border-red-200" style={{ background: "rgba(220,38,38,0.05)" }}>
-                          {error}
-                        </div>
-                      )}
-
-                      <button
-                        type="submit"
-                        disabled={loading}
-                        onMouseMove={handleButtonMouseMove}
-                        className="shimmer-btn w-full py-2.5 rounded-xl text-xs font-bold text-white transition-all disabled:opacity-60 cursor-pointer mt-2 relative overflow-hidden active:scale-[0.98] border-0"
-                        style={{
-                          background: "radial-gradient(circle 80px at var(--x, 50%) var(--y, 50%), rgba(255,255,255,0.18), transparent), linear-gradient(135deg, #4F46E5, #6366F1)",
-                          boxShadow: "0 4px 12px rgba(79, 70, 229,0.2)"
-                        }}
-                      >
-                        {loading ? "Registering…" : "Create Account →"}
-                      </button>
-                    </form>
+                    ))}
                   </div>
                 </div>
-              </div>
-            </div>
+              )}
 
-          </div>
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+                  className="flex items-start gap-2 rounded-ui-md border border-danger/25 bg-danger-subtle px-3 py-2"
+                  role="alert"
+                >
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />
+                  <p className="text-xs font-medium leading-relaxed text-danger">{error}</p>
+                </motion.div>
+              )}
+
+              {/* Premium gradient CTA */}
+              <motion.div whileHover={{ scale: 1.015 }} whileTap={{ scale: 0.98 }}
+                transition={{ duration: 0.15, ease: EASE }}>
+                <Button
+                  type="submit"
+                  loading={loading}
+                  className={cn(
+                    "w-full border-0 bg-gradient-to-r from-[#5B5EF7] to-[#7C6BFF] text-white",
+                    "shadow-[0_8px_24px_-8px_rgba(91,94,247,0.55)]",
+                    "transition-shadow duration-200 hover:shadow-[0_15px_40px_rgba(91,94,247,0.35)]"
+                  )}
+                >
+                  {isRegister ? "Create account" : "Sign in"}
+                </Button>
+              </motion.div>
+            </form>
+
+            <p className="mt-5 text-center text-[11px] text-ink-tertiary">
+              {isRegister ? "Already have an account?" : "Don't have an account?"}{" "}
+              <button type="button"
+                onClick={() => { setMode(isRegister ? "login" : "register"); setError(""); }}
+                className="font-semibold text-brand hover:underline">
+                {isRegister ? "Sign in" : "Register"}
+              </button>
+            </p>
+          </motion.div>
+
+          {/* Mobile trust row */}
+          <ul className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-2 lg:hidden">
+            {TRUST.map((t) => {
+              const Icon = t.icon;
+              return (
+                <li key={t.label} className="flex items-center gap-1.5 text-[11px] font-semibold text-ink/75">
+                  <Icon className="h-3 w-3" /> {t.label}
+                </li>
+              );
+            })}
+          </ul>
+        </motion.div>
+      </main>
+    </div>
+  );
+}
+
+/** Input with a floating label, purple focus border and soft glow. */
+function FloatField({
+  id, label, icon: Icon, trailing, value, ...props
+}: {
+  id: string;
+  label: string;
+  icon: React.ElementType;
+  trailing?: React.ReactNode;
+  value: string;
+} & React.InputHTMLAttributes<HTMLInputElement>) {
+  const [focused, setFocused] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+  const lifted = focused || value.length > 0;
+
+  return (
+    <div className="relative">
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-ui-md border bg-surface px-3 transition-all duration-200",
+          focused
+            ? "border-brand shadow-[0_0_0_4px_rgba(91,94,247,0.12)]"
+            : "border-line hover:border-line-strong"
+        )}
+      >
+        <Icon className={cn("h-3.5 w-3.5 shrink-0 transition-colors", focused ? "text-brand" : "text-ink-tertiary")} />
+        <div className="relative flex-1">
+          <motion.label
+            htmlFor={id}
+            onClick={() => ref.current?.focus()}
+            animate={{
+              y: lifted ? -9 : 0,
+              fontSize: lifted ? "10px" : "13px",
+              color: focused ? "var(--color-brand)" : "var(--color-ink-tertiary)",
+            }}
+            transition={{ duration: 0.18, ease: EASE }}
+            className="pointer-events-none absolute left-0 top-1/2 origin-left -translate-y-1/2 font-semibold"
+          >
+            {label}
+          </motion.label>
+          <input
+            id={id}
+            ref={ref}
+            value={value}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            className="w-full bg-transparent pb-1.5 pt-4 text-[13px] text-ink outline-none"
+            {...props}
+          />
         </div>
-
+        {trailing}
       </div>
-    </>
+    </div>
   );
 }

@@ -37,21 +37,21 @@ import { cn } from "@/lib/utils";
 // fabricated status (the previous version invented "Operational"/"On Duty").
 type TypeMeta = { color: string; icon: React.ElementType };
 const TYPE_META: Record<string, TypeMeta> = {
-  Document: { color: "#4f46e5", icon: FileText },
-  SOP: { color: "#4f46e5", icon: FileText },
-  Machine: { color: "#0d9488", icon: Cpu },
-  Equipment: { color: "#0d9488", icon: Cpu },
-  Organization: { color: "#b45309", icon: Building2 },
-  Person: { color: "#7c3aed", icon: User },
-  Engineer: { color: "#7c3aed", icon: User },
-  Location: { color: "#0891b2", icon: MapPin },
-  SparePart: { color: "#64748b", icon: Package },
-  Skill: { color: "#0891b2", icon: Zap },
-  Date: { color: "#64748b", icon: Calendar },
-  Regulation: { color: "#b42318", icon: Shield },
-  Incident: { color: "#b42318", icon: Wrench },
+  Document: { color: "var(--color-brand)", icon: FileText },
+  SOP: { color: "var(--color-brand)", icon: FileText },
+  Machine: { color: "var(--color-info)", icon: Cpu },
+  Equipment: { color: "var(--color-info)", icon: Cpu },
+  Organization: { color: "var(--color-warning)", icon: Building2 },
+  Person: { color: "var(--color-ai)", icon: User },
+  Engineer: { color: "var(--color-ai)", icon: User },
+  Location: { color: "var(--color-info-solid)", icon: MapPin },
+  SparePart: { color: "var(--color-ink-secondary)", icon: Package },
+  Skill: { color: "var(--color-info-solid)", icon: Zap },
+  Date: { color: "var(--color-ink-secondary)", icon: Calendar },
+  Regulation: { color: "var(--color-danger)", icon: Shield },
+  Incident: { color: "var(--color-danger)", icon: Wrench },
 };
-const metaFor = (t: string): TypeMeta => TYPE_META[t] ?? { color: "#64748b", icon: Boxes };
+const metaFor = (t: string): TypeMeta => TYPE_META[t] ?? { color: "var(--color-ink-secondary)", icon: Boxes };
 
 // ── Custom node ─────────────────────────────────────────────────────────────
 type NodeData = {
@@ -369,7 +369,7 @@ export default function GraphPage() {
             <Network className="h-4 w-4 text-white" />
           </div>
           <div>
-            <h1 className="text-[13px] font-bold leading-tight text-ink">Knowledge Graph</h1>
+            <h1 className="text-card font-bold leading-tight text-ink">Knowledge Graph</h1>
             <p className="text-[11px] text-ink-tertiary">
               {hasGraph
                 ? `${graph.nodes.length} entities · ${graph.relationships.length} relationships`

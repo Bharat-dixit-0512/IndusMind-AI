@@ -8,12 +8,19 @@ import { cn } from "@/lib/utils";
  */
 export function Card({
   className,
+  interactive = false,
   ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+}: React.HTMLAttributes<HTMLDivElement> & {
+  /** Adds a hover lift + elevation. Use for clickable/navigable cards. */
+  interactive?: boolean;
+}) {
   return (
     <div
       className={cn(
-        "rounded-ui-xl border border-line bg-surface shadow-e1",
+        "rounded-ui-xl border border-line bg-surface shadow-e2",
+        interactive &&
+          "cursor-pointer transition-[transform,box-shadow,border-color] duration-200 " +
+            "hover:-translate-y-1 hover:border-brand-line hover:shadow-e3",
         className
       )}
       {...props}

@@ -2,20 +2,23 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useAuth } from "@/context/AuthContext";
+import { motion } from "framer-motion";
 import {
-  LayoutDashboard, FileText, MessageSquare, Network,
-  Wrench, ShieldCheck, BarChart3, LogOut, Brain, ChevronRight
+  BarChart3, Brain, ChevronLeft, FileText, LayoutDashboard,
+  MessageSquare, Network, ShieldCheck, Wrench,
 } from "lucide-react";
 
+import AccountMenu from "@/components/AccountMenu";
+import { cn } from "@/lib/utils";
+
 const NAV = [
-  { href: "/dashboard",   icon: LayoutDashboard, label: "Dashboard"    },
-  { href: "/documents",   icon: FileText,         label: "Documents"    },
-  { href: "/chat",        icon: MessageSquare,    label: "AI Chat"      },
-  { href: "/graph",       icon: Network,          label: "Knowledge Graph" },
-  { href: "/maintenance", icon: Wrench,           label: "Maintenance"  },
-  { href: "/compliance",  icon: ShieldCheck,      label: "Compliance"   },
-  { href: "/reports",     icon: BarChart3,        label: "Reports"      },
+  { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  { href: "/documents", icon: FileText, label: "Documents" },
+  { href: "/chat", icon: MessageSquare, label: "AI Chat" },
+  { href: "/graph", icon: Network, label: "Knowledge Graph" },
+  { href: "/maintenance", icon: Wrench, label: "Maintenance" },
+  { href: "/compliance", icon: ShieldCheck, label: "Compliance" },
+  { href: "/reports", icon: BarChart3, label: "Reports" },
 ];
 
 interface SidebarProps {
@@ -27,122 +30,86 @@ interface SidebarProps {
 
 export default function Sidebar({ mobileOpen, onClose, collapsed = false, onToggle }: SidebarProps) {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
 
   return (
     <>
-      {/* Mobile backdrop — clicking it closes the drawer */}
+      {/* Mobile backdrop */}
       {mobileOpen && (
-        <div
-          className="fixed inset-0 z-20 md:hidden cursor-pointer"
-          style={{ background: "rgba(15,23,42,0.15)" }}
-          onClick={onClose}
-        />
+        <div className="fixed inset-0 z-20 bg-ink/20 md:hidden" onClick={onClose} />
       )}
 
       <aside
-        className={`fixed left-0 top-0 h-screen flex flex-col z-30 transition-all duration-300 md:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"} ${collapsed ? "w-16" : "w-60"}`}
-        style={{ background: "#FFFFFF", borderRight: "1px solid #E2E8F0" }}>
-
-        {/* The Physical Toggle Button */}
+        className={cn(
+          "fixed left-0 top-0 z-30 flex h-screen flex-col border-r border-white/5 bg-sidebar",
+          "transition-[width,transform] duration-300 md:translate-x-0",
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
+          collapsed ? "w-16" : "w-60"
+        )}
+      >
+        {/* Collapse handle */}
         {onToggle && (
           <button
             onClick={onToggle}
-            className="absolute right-0 top-10 translate-x-1/2 z-40 bg-white border border-[#E2E8F0] hover:border-slate-300 rounded-full p-1 cursor-pointer shadow-md text-slate-500 hover:text-slate-700 transition-all duration-300 hidden md:flex items-center justify-center w-6 h-6"
-            style={{ transform: `translate(50%, 0) rotate(${collapsed ? 0 : 180}deg)` }}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="absolute -right-3 top-8 z-40 hidden h-6 w-6 items-center justify-center rounded-full border border-line bg-surface text-ink-secondary shadow-e2 transition-colors hover:text-brand md:flex"
           >
-            <ChevronRight className="w-3.5 h-3.5" />
+            <motion.span animate={{ rotate: collapsed ? 180 : 0 }} transition={{ duration: 0.2 }} className="block">
+              <ChevronLeft className="h-3 w-3" />
+            </motion.span>
           </button>
         )}
 
-        {/* Logo */}
-        <div className={`py-6 flex items-center transition-all duration-300 ${collapsed ? "px-0 justify-center" : "px-5"} gap-3`}>
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 cursor-pointer"
-            style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", boxShadow: "0 4px 12px rgba(79, 70, 229,0.15)" }}>
-            <Brain className="w-5 h-5 text-white" />
+        {/* Brand */}
+        <div className={cn("flex items-center gap-2.5 px-4 py-4", collapsed && "justify-center px-0")}>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-ui-md bg-brand">
+            <Brain className="h-4 w-4 text-white" />
           </div>
           {!collapsed && (
-            <div className="transition-opacity duration-200 animate-fade-in whitespace-nowrap">
-              <p className="text-sm font-extrabold text-[#0F172A] leading-tight">Industrial AI</p>
-              <p className="text-[10px] text-indigo-600 font-extrabold tracking-wider uppercase leading-tight">Brain</p>
+            <div className="min-w-0">
+              <p className="truncate text-[13px] font-bold leading-tight text-white">IndusMind</p>
+              <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-sidebar-ink">
+                Knowledge Intelligence
+              </p>
             </div>
           )}
         </div>
 
-        <div className={`mb-4 h-px bg-[#E2E8F0] transition-all duration-300 ${collapsed ? "mx-3" : "mx-4"}`} />
-
         {/* Nav */}
-        <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
           {NAV.map(({ href, icon: Icon, label }) => {
             const active = pathname === href || pathname.startsWith(href + "/");
             return (
-              <Link key={href} href={href} onClick={onClose}
-                className={`relative flex items-center gap-2.5 ${collapsed ? "justify-center px-0 py-3" : "px-3 py-2.5"} rounded-xl text-sm font-bold transition-all duration-200 group cursor-pointer ${active ? "" : "hover:bg-[#EEF1F8]"}`}
-                style={active
-                  ? { background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "#FFFFFF", boxShadow: "0 8px 18px -6px rgba(79,70,229,0.45)" }
-                  : { color: "#64748B" }}>
-                <Icon className={`w-4 h-4 flex-shrink-0 ${collapsed ? "mx-auto" : ""}`} />
-                {!collapsed && (
-                  <span className="flex-1 transition-opacity duration-200 animate-fade-in whitespace-nowrap">{label}</span>
+              <Link
+                key={href}
+                href={href}
+                onClick={onClose}
+                title={collapsed ? label : undefined}
+                className={cn(
+                  "group relative flex items-center gap-2.5 rounded-ui-md px-2.5 py-2 text-[13px] font-semibold transition-colors",
+                  collapsed && "justify-center px-0",
+                  active
+                    ? "bg-sidebar-active text-sidebar-ink-active shadow-[0_6px_16px_-6px_rgba(91,94,247,0.7)]"
+                    : "text-sidebar-ink hover:bg-sidebar-hover hover:text-white"
                 )}
-                {!collapsed && active && <ChevronRight className="w-3.5 h-3.5 opacity-90 text-white" />}
-                
-                {/* Floating Glassmorphic Tooltip */}
-                {collapsed && (
-                  <div className="absolute left-16 top-1/2 -translate-y-1/2 ml-3 px-3 py-1.5 bg-white/85 backdrop-blur-md border border-slate-200 rounded-lg shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity duration-200 text-xs font-bold text-[#0F172A] whitespace-nowrap z-50">
-                    {label}
-                  </div>
-                )}
+              >
+                {/* Icon lifts slightly on hover for a tactile feel. */}
+                <motion.span
+                  whileHover={{ scale: 1.12 }}
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                  className="flex shrink-0"
+                >
+                  <Icon className="h-4 w-4" />
+                </motion.span>
+                {!collapsed && <span className="truncate">{label}</span>}
               </Link>
             );
           })}
         </nav>
 
-        {/* User footer */}
-        <div className={`transition-all duration-300 ${collapsed ? "p-2" : "p-4"}`}>
-          {collapsed ? (
-            <div className="flex flex-col items-center justify-center gap-3">
-              <div className="relative group/avatar cursor-pointer">
-                <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
-                  style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)" }}>
-                  {user?.name?.charAt(0) ?? "B"}
-                </div>
-                {/* Pulsing green status dot */}
-                <span className="absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full ring-2 ring-white bg-[#16A34A] animate-pulse" />
-                {/* Tooltip for user info */}
-                <div className="absolute left-14 top-1/2 -translate-y-1/2 ml-2 px-3 py-1.5 bg-white/85 backdrop-blur-md border border-slate-200 rounded-lg shadow-lg opacity-0 pointer-events-none group-hover/avatar:opacity-100 group-hover/avatar:pointer-events-auto transition-opacity duration-200 text-xs text-[#0F172A] whitespace-nowrap z-50">
-                  <p className="font-extrabold">{user?.name ?? "Bharat Dixit"}</p>
-                  <p className="text-[10px] text-[#64748B] font-semibold">{user?.role ?? "Engineer"}</p>
-                </div>
-              </div>
-              
-              {/* Collapsed logout button */}
-              <button onClick={logout} title="Sign out"
-                className="group/logout relative text-[#94A3B8] hover:text-red-600 transition-colors p-2 cursor-pointer rounded-lg hover:bg-red-50 border-0 bg-transparent">
-                <LogOut className="w-4 h-4" />
-                {/* Tooltip for logout */}
-                <div className="absolute left-14 top-1/2 -translate-y-1/2 ml-2 px-3 py-1.5 bg-white/85 backdrop-blur-md border border-slate-200 rounded-lg shadow-lg opacity-0 pointer-events-none group-hover/logout:opacity-100 group-hover/logout:pointer-events-auto transition-opacity duration-200 text-xs font-bold text-red-600 whitespace-nowrap z-50">
-                  Sign out
-                </div>
-              </button>
-            </div>
-          ) : (
-            <div className="border border-[#E2E8F0] rounded-xl p-3 flex items-center gap-3 bg-[#F1F5F9] transition-all duration-300">
-              <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
-                style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)" }}>
-                {user?.name?.charAt(0) ?? "B"}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-extrabold text-[#0F172A] truncate">{user?.name ?? "Bharat Dixit"}</p>
-                <p className="text-[10px] text-[#64748B] font-semibold truncate">{user?.role ?? "Engineer"}</p>
-              </div>
-              <button onClick={logout} title="Sign out"
-                className="text-[#94A3B8] hover:text-red-600 transition-colors p-1 cursor-pointer border-0 bg-transparent">
-                <LogOut className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
+        {/* Account — opens a real menu (identity, settings, sign out) rather
+            than exposing a bare sign-out icon as the only affordance. */}
+        <div className={cn("border-t border-white/5 p-2", collapsed && "px-1")}>
+          <AccountMenu collapsed={collapsed} />
         </div>
       </aside>
     </>

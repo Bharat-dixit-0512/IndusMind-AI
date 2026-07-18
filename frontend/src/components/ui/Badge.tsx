@@ -36,12 +36,14 @@ export function Badge({
   );
 }
 
+// Dots use the vivid `-solid` hues: they are pure indicators, so the spec
+// colour applies directly without the contrast constraint that governs text.
 const DOT_TONES: Record<Tone, string> = {
   neutral: "bg-ink-tertiary",
-  success: "bg-success",
-  warning: "bg-warning",
-  danger: "bg-danger",
-  info: "bg-info",
+  success: "bg-success-solid",
+  warning: "bg-warning-solid",
+  danger: "bg-danger-solid",
+  info: "bg-info-solid",
   brand: "bg-brand",
 };
 

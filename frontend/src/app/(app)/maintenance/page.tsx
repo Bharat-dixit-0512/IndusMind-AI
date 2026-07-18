@@ -118,7 +118,7 @@ export default function MaintenancePage() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-ink">Maintenance Intelligence</h1>
+          <h1 className="t-page text-ink">Maintenance Intelligence</h1>
           <p className="mt-0.5 text-xs text-ink-secondary">
             Maintainable assets discovered from your documents — with evidence-based RCA. No fabricated metrics.
           </p>
