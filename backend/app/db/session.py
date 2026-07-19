@@ -35,7 +35,39 @@ def _build_engine():
         logger.info(f"Using SQLite database (explicitly configured): {_redact(url)}")
         return create_engine(url, connect_args={"check_same_thread": False})
 
-    engine = create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=20)
+    # Auto-rewrite database connection string schemes
+    # 1. Translate postgres:// to postgresql:// (required by SQLAlchemy 1.4+)
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    
+    # 2. Add pg8000 driver suffix if missing, as pg8000 is our installed driver
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+pg8000://", 1)
+
+    connect_args = {}
+    
+    # 3. Handle sslmode / ssl parameter for pg8000 to work out of the box with SSL-enforced dbs (e.g. Render/Supabase)
+    if "sslmode" in url or "ssl=" in url:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        sslmode = query_params.pop("sslmode", [None])[0]
+        ssl_val = query_params.pop("ssl", [None])[0]
+        
+        # Re-build query string without sslmode/ssl to prevent pg8000 driver parsing errors
+        new_query = urllib.parse.urlencode(query_params, doseq=True)
+        parsed = parsed._replace(query=new_query)
+        url = urllib.parse.urlunparse(parsed)
+        
+        # Configure SSL context for pg8000
+        import ssl
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        connect_args["ssl_context"] = ssl_context
+        logger.info("SSL connection configured for PostgreSQL (sslmode/ssl parameter detected and mapped to ssl_context).")
+
+    engine = create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=20, connect_args=connect_args)
     try:
         with engine.connect():
             pass
